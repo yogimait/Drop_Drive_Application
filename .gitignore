@@ -1,0 +1,83 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/certificates
+/native/node_modules
+/native/build
+/native/test
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs / editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.sublime*
+*.code-workspace
+
+# caches
+.cache/
+.parcel-cache/
+.pnp.*
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.eslintcache
+
+# test / coverage
+coverage/
+*.lcov
+
+# native build artifacts
+/native/*.node
+/native/Release*/
+native/Release*/
+**/build/Release
+
+# additional build outputs
+/dist/
+/out/
+
+# logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# misc
+*.tgz
+*.zip
+*.exe
