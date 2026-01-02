@@ -5,6 +5,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include "purgeCommon.h"
 
 // ATA command definitions
 #define ATA_CMD_IDENTIFY_DEVICE       0xEC
@@ -32,8 +33,93 @@ struct ATASecurityInfo {
     uint16_t securityWord;
 };
 
-// Get ATA security information
-ATASecurityInfo getATASecurityInfo(const std::string& drivePath) {
+// Detect device type from storage properties
+static DeviceType detectDeviceType(const std::string& drivePath) {
+    HANDLE hDevice = CreateFileA(
+        drivePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        0,
+        NULL
+    );
+
+    if (hDevice == INVALID_HANDLE_VALUE) {
+        return DeviceType::UNKNOWN;
+    }
+
+    DeviceType result = DeviceType::UNKNOWN;
+
+    // Query adapter properties for bus type
+    STORAGE_PROPERTY_QUERY query;
+    ZeroMemory(&query, sizeof(query));
+    query.PropertyId = StorageAdapterProperty;
+    query.QueryType = PropertyStandardQuery;
+
+    BYTE adapterBuffer[1024];
+    DWORD bytesReturned = 0;
+
+    if (DeviceIoControl(hDevice,
+                        IOCTL_STORAGE_QUERY_PROPERTY,
+                        &query,
+                        sizeof(query),
+                        adapterBuffer,
+                        sizeof(adapterBuffer),
+                        &bytesReturned,
+                        NULL)) {
+        STORAGE_ADAPTER_DESCRIPTOR* adapter = (STORAGE_ADAPTER_DESCRIPTOR*)adapterBuffer;
+        
+        switch (adapter->BusType) {
+            case BusTypeUsb:
+                result = DeviceType::USB;
+                break;
+            case BusTypeNvme:
+                result = DeviceType::NVME;
+                break;
+            case BusTypeAta:
+            case BusTypeSata:
+            case BusTypeAtapi:
+                // Need to determine if SSD or HDD
+                result = DeviceType::SATA_HDD;  // Default, will refine below
+                break;
+            case BusTypeScsi:
+            case BusTypeSas:
+                result = DeviceType::SCSI;
+                break;
+            default:
+                result = DeviceType::UNKNOWN;
+                break;
+        }
+    }
+
+    // Try to detect SSD vs HDD for SATA devices
+    if (result == DeviceType::SATA_HDD) {
+        ZeroMemory(&query, sizeof(query));
+        query.PropertyId = StorageDeviceSeekPenaltyProperty;
+        query.QueryType = PropertyStandardQuery;
+
+        DEVICE_SEEK_PENALTY_DESCRIPTOR seekPenalty;
+        if (DeviceIoControl(hDevice,
+                            IOCTL_STORAGE_QUERY_PROPERTY,
+                            &query,
+                            sizeof(query),
+                            &seekPenalty,
+                            sizeof(seekPenalty),
+                            &bytesReturned,
+                            NULL)) {
+            if (!seekPenalty.IncursSeekPenalty) {
+                result = DeviceType::SATA_SSD;
+            }
+        }
+    }
+
+    CloseHandle(hDevice);
+    return result;
+}
+
+// Get ATA security information (non-destructive query)
+static ATASecurityInfo getATASecurityInfo(const std::string& drivePath) {
     ATASecurityInfo info = {false, false, false, false, false, 0};
     
     HANDLE hDevice = CreateFileA(
@@ -51,7 +137,7 @@ ATASecurityInfo getATASecurityInfo(const std::string& drivePath) {
         return info;
     }
 
-    // Prepare ATA IDENTIFY DEVICE command
+    // Prepare ATA IDENTIFY DEVICE command (this is a read-only query)
     struct {
         ATA_PASS_THROUGH_EX apt;
         BYTE buffer[512];
@@ -84,52 +170,116 @@ ATASecurityInfo getATASecurityInfo(const std::string& drivePath) {
         info.locked = (info.securityWord & ATA_SECURITY_LOCKED) != 0;
         info.frozen = (info.securityWord & ATA_SECURITY_FROZEN) != 0;
         info.enhancedEraseSupported = (info.securityWord & ATA_SECURITY_ENHANCED_ERASE) != 0;
-        
-        std::cout << "Security Status:" << std::endl;
-        std::cout << "  Supported: " << info.supported << std::endl;
-        std::cout << "  Enabled: " << info.enabled << std::endl;
-        std::cout << "  Locked: " << info.locked << std::endl;
-        std::cout << "  Frozen: " << info.frozen << std::endl;
-        std::cout << "  Enhanced Erase: " << info.enhancedEraseSupported << std::endl;
-    } else {
-        std::cerr << "IDENTIFY DEVICE failed: " << GetLastError() << std::endl;
     }
 
     CloseHandle(hDevice);
     return info;
 }
 
-// Execute ATA Secure Erase
-bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
+// Main ATA Secure Erase function with dryRun support
+PurgeResult ataSecureErase(const std::string& drivePath, bool useEnhanced, bool dryRun) {
+    PurgeResult result;
+    result.devicePath = drivePath;
+    result.method = useEnhanced ? PurgeMethod::ATA_SECURE_ERASE_ENHANCED : PurgeMethod::ATA_SECURE_ERASE;
+    
     std::cout << "=== ATA Secure Erase ===" << std::endl;
     std::cout << "Drive: " << drivePath << std::endl;
     std::cout << "Mode: " << (useEnhanced ? "Enhanced" : "Normal") << std::endl;
+    std::cout << "Dry Run: " << (dryRun ? "YES (no data will be erased)" : "NO (DESTRUCTIVE)") << std::endl;
 
-    // Step 0: Check security status
-    ATASecurityInfo secInfo = getATASecurityInfo(drivePath);
-    
-    if (!secInfo.supported) {
-        std::cerr << "ERROR: Drive does not support ATA Secure Erase" << std::endl;
-        return false;
+    // Step 1: Detect device type
+    result.deviceType = detectDeviceType(drivePath);
+    std::cout << "Detected device type: " << deviceTypeToString(result.deviceType) << std::endl;
+
+    // Step 2: Check if purge is supported for this device type
+    if (!isPurgeSupported(result.deviceType)) {
+        result.success = false;
+        result.supported = false;
+        result.executed = false;
+        result.status = "unsupported";
+        result.message = "ATA Secure Erase not supported for " + deviceTypeToString(result.deviceType) + " devices";
+        result.reason = getUnsupportedReason(result.deviceType);
+        std::cerr << "ERROR: " << result.message << std::endl;
+        std::cerr << "Reason: " << result.reason << std::endl;
+        return result;
     }
 
+    // Step 3: Check ATA security capabilities (this is a non-destructive read)
+    ATASecurityInfo secInfo = getATASecurityInfo(drivePath);
+    
+    std::cout << "Security Status:" << std::endl;
+    std::cout << "  ATA Security Supported: " << secInfo.supported << std::endl;
+    std::cout << "  Security Enabled: " << secInfo.enabled << std::endl;
+    std::cout << "  Locked: " << secInfo.locked << std::endl;
+    std::cout << "  Frozen: " << secInfo.frozen << std::endl;
+    std::cout << "  Enhanced Erase Supported: " << secInfo.enhancedEraseSupported << std::endl;
+    
+    if (!secInfo.supported) {
+        result.success = false;
+        result.supported = false;
+        result.executed = false;
+        result.status = "unsupported";
+        result.message = "Drive does not support ATA Secure Erase";
+        result.reason = "ATA IDENTIFY DEVICE indicates security features are not supported";
+        std::cerr << "ERROR: " << result.message << std::endl;
+        return result;
+    }
+
+    // Check for blocking conditions
     if (secInfo.frozen) {
-        std::cerr << "ERROR: Drive is security frozen. Cannot execute Secure Erase." << std::endl;
-        std::cerr << "Solution: Reboot system or use a power cycle to unfreeze." << std::endl;
-        return false;
+        result.success = false;
+        result.supported = true;  // Supported but blocked
+        result.executed = false;
+        result.status = "blocked";
+        result.message = "Drive is security frozen";
+        result.reason = "Drive security is frozen by BIOS. Reboot or power cycle the drive to unfreeze.";
+        std::cerr << "ERROR: " << result.message << std::endl;
+        return result;
     }
 
     if (secInfo.locked) {
-        std::cerr << "ERROR: Drive is locked. Cannot execute Secure Erase." << std::endl;
-        return false;
+        result.success = false;
+        result.supported = true;
+        result.executed = false;
+        result.status = "blocked";
+        result.message = "Drive is locked";
+        result.reason = "Drive has an active security password and is locked.";
+        std::cerr << "ERROR: " << result.message << std::endl;
+        return result;
     }
 
     if (useEnhanced && !secInfo.enhancedEraseSupported) {
-        std::cerr << "WARNING: Enhanced erase not supported. Using normal erase." << std::endl;
+        std::cout << "WARNING: Enhanced erase not supported. Using normal erase." << std::endl;
         useEnhanced = false;
+        result.method = PurgeMethod::ATA_SECURE_ERASE;
     }
 
-    // Open device
+    // DRY RUN: Return success without executing destructive commands
+    if (dryRun) {
+        result.success = true;
+        result.supported = true;
+        result.executed = false;  // No actual erase performed
+        result.status = "dry_run";
+        result.message = "ATA Secure Erase is SUPPORTED for this device (dry run - no data erased)";
+        result.reason = "Dry run mode: Device capability verified. No destructive commands sent.";
+        
+        std::cout << "\n=== DRY RUN COMPLETE ===" << std::endl;
+        std::cout << "Result: " << result.message << std::endl;
+        std::cout << "Device Type: " << deviceTypeToString(result.deviceType) << std::endl;
+        std::cout << "Method: " << purgeMethodToString(result.method) << std::endl;
+        std::cout << "Enhanced Erase Available: " << secInfo.enhancedEraseSupported << std::endl;
+        std::cout << "NO DATA WAS ERASED - This was a simulation." << std::endl;
+        
+        return result;
+    }
+
+    // ============================================
+    // DESTRUCTIVE OPERATIONS BELOW - NOT DRY RUN
+    // ============================================
+    
+    std::cout << "\n!!! EXECUTING DESTRUCTIVE OPERATION !!!" << std::endl;
+
+    // Open device for writing
     HANDLE hDevice = CreateFileA(
         drivePath.c_str(),
         GENERIC_READ | GENERIC_WRITE,
@@ -141,13 +291,19 @@ bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
     );
 
     if (hDevice == INVALID_HANDLE_VALUE) {
-        std::cerr << "Error opening drive: " << GetLastError() << std::endl;
-        return false;
+        result.success = false;
+        result.supported = true;
+        result.executed = false;
+        result.status = "error";
+        result.errorCode = GetLastError();
+        result.message = "Failed to open drive";
+        result.reason = "CreateFile failed with error code " + std::to_string(result.errorCode);
+        std::cerr << "ERROR: " << result.message << std::endl;
+        return result;
     }
 
-    // Password buffer (typically set to all zeros for initial secure erase)
+    // Password buffer (all zeros for initial secure erase)
     BYTE passwordBuffer[512] = {0};
-    // Set master password indicator (bit 0 = user password)
     passwordBuffer[0] = 0;  // User level
 
     struct {
@@ -157,7 +313,7 @@ bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
 
     DWORD bytesReturned = 0;
 
-    // Step 1: SECURITY SET PASSWORD (required before erase)
+    // Step 1: SECURITY SET PASSWORD
     std::cout << "Step 1: Setting security password..." << std::endl;
     ZeroMemory(&commandData, sizeof(commandData));
     memcpy(commandData.buffer, passwordBuffer, 512);
@@ -169,19 +325,20 @@ bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
     commandData.apt.DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX);
     commandData.apt.CurrentTaskFile[6] = ATA_CMD_SECURITY_SET_PASSWORD;
 
-    if (!DeviceIoControl(hDevice,
-                         IOCTL_ATA_PASS_THROUGH,
-                         &commandData,
-                         sizeof(commandData),
-                         &commandData,
-                         sizeof(commandData),
-                         &bytesReturned,
-                         NULL)) {
-        std::cerr << "Set Password failed: " << GetLastError() << std::endl;
+    if (!DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH,
+                         &commandData, sizeof(commandData),
+                         &commandData, sizeof(commandData),
+                         &bytesReturned, NULL)) {
+        result.success = false;
+        result.supported = true;
+        result.executed = false;
+        result.status = "error";
+        result.errorCode = GetLastError();
+        result.message = "SECURITY SET PASSWORD failed";
+        result.reason = "Error code " + std::to_string(result.errorCode);
         CloseHandle(hDevice);
-        return false;
+        return result;
     }
-    std::cout << "Password set successfully." << std::endl;
 
     // Step 2: SECURITY ERASE PREPARE
     std::cout << "Step 2: Erase prepare..." << std::endl;
@@ -194,29 +351,28 @@ bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
     commandData.apt.DataBufferOffset = 0;
     commandData.apt.CurrentTaskFile[6] = ATA_CMD_SECURITY_ERASE_PREPARE;
 
-    if (!DeviceIoControl(hDevice,
-                         IOCTL_ATA_PASS_THROUGH,
-                         &commandData,
-                         sizeof(ATA_PASS_THROUGH_EX),
-                         &commandData,
-                         sizeof(ATA_PASS_THROUGH_EX),
-                         &bytesReturned,
-                         NULL)) {
-        std::cerr << "Erase Prepare failed: " << GetLastError() << std::endl;
+    if (!DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH,
+                         &commandData, sizeof(ATA_PASS_THROUGH_EX),
+                         &commandData, sizeof(ATA_PASS_THROUGH_EX),
+                         &bytesReturned, NULL)) {
+        result.success = false;
+        result.supported = true;
+        result.executed = false;
+        result.status = "error";
+        result.errorCode = GetLastError();
+        result.message = "SECURITY ERASE PREPARE failed";
+        result.reason = "Error code " + std::to_string(result.errorCode);
         CloseHandle(hDevice);
-        return false;
+        return result;
     }
-    std::cout << "Erase prepare complete." << std::endl;
 
     // Step 3: SECURITY ERASE UNIT
     std::cout << "Step 3: Executing secure erase..." << std::endl;
-    std::cout << "WARNING: This may take a long time (10 minutes to several hours)." << std::endl;
-    std::cout << "DO NOT interrupt or power off the drive!" << std::endl;
+    std::cout << "WARNING: This may take hours. DO NOT interrupt!" << std::endl;
 
     ZeroMemory(&commandData, sizeof(commandData));
     memcpy(commandData.buffer, passwordBuffer, 512);
     
-    // Set enhanced erase bit if requested (bit 1)
     if (useEnhanced) {
         commandData.buffer[0] = 0x02;  // Enhanced erase
     }
@@ -224,60 +380,69 @@ bool ataSecureErase(const std::string& drivePath, bool useEnhanced = false) {
     commandData.apt.Length = sizeof(ATA_PASS_THROUGH_EX);
     commandData.apt.AtaFlags = ATA_FLAGS_DATA_OUT;
     commandData.apt.DataTransferLength = 512;
-    // Very long timeout - secure erase can take hours
     commandData.apt.TimeOutValue = 60 * 60 * 4; // 4 hours max
     commandData.apt.DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX);
     commandData.apt.CurrentTaskFile[6] = ATA_CMD_SECURITY_ERASE_UNIT;
 
     auto startTime = std::chrono::high_resolution_clock::now();
 
-    if (!DeviceIoControl(hDevice,
-                         IOCTL_ATA_PASS_THROUGH,
-                         &commandData,
-                         sizeof(commandData),
-                         &commandData,
-                         sizeof(commandData),
-                         &bytesReturned,
-                         NULL)) {
-        DWORD error = GetLastError();
-        std::cerr << "Erase Unit failed: " << error << std::endl;
-        
-        if (error == ERROR_IO_DEVICE || error == ERROR_GEN_FAILURE) {
-            std::cerr << "This may be due to timeout. Check drive status manually." << std::endl;
-        }
-        
+    if (!DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH,
+                         &commandData, sizeof(commandData),
+                         &commandData, sizeof(commandData),
+                         &bytesReturned, NULL)) {
+        result.success = false;
+        result.supported = true;
+        result.executed = true;  // We attempted execution
+        result.status = "error";
+        result.errorCode = GetLastError();
+        result.message = "SECURITY ERASE UNIT failed";
+        result.reason = "Error code " + std::to_string(result.errorCode);
         CloseHandle(hDevice);
-        return false;
+        return result;
     }
 
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime).count();
 
-    std::cout << "\\nSecure erase completed successfully!" << std::endl;
+    CloseHandle(hDevice);
+
+    result.success = true;
+    result.supported = true;
+    result.executed = true;
+    result.status = "success";
+    result.message = "ATA Secure Erase completed successfully";
+    result.reason = "Completed in " + std::to_string(duration) + " seconds";
+
+    std::cout << "\n=== SECURE ERASE COMPLETE ===" << std::endl;
     std::cout << "Time taken: " << duration << " seconds (" << (duration / 60) << " minutes)" << std::endl;
 
-    CloseHandle(hDevice);
-    return true;
+    return result;
+}
+
+// Backward compatibility wrapper (returns bool)
+bool ataSecureEraseLegacy(const std::string& drivePath, bool useEnhanced) {
+    PurgeResult result = ataSecureErase(drivePath, useEnhanced, false);
+    return result.success;
 }
 
 // Export for testing
 #ifdef TEST_STANDALONE
 int main() {
-    // WARNING: DO NOT run on production drives!
-    std::string testDrive = "\\\\.\\PhysicalDrive1";  // Change this!
+    std::string testDrive = "\\\\.\\PhysicalDrive1";
     
-    std::cout << "WARNING: This will ERASE ALL DATA on " << testDrive << "!" << std::endl;
-    std::cout << "Type 'YES ERASE' to continue: ";
+    std::cout << "=== ATA Secure Erase Test ===" << std::endl;
+    std::cout << "Testing drive: " << testDrive << std::endl << std::endl;
     
-    std::string confirmation;
-    std::getline(std::cin, confirmation);
+    // First, run in dry-run mode (safe)
+    std::cout << "--- DRY RUN (safe) ---" << std::endl;
+    PurgeResult dryResult = ataSecureErase(testDrive, false, true);
+    std::cout << "\nDry Run Result:" << std::endl;
+    std::cout << "  Status: " << dryResult.status << std::endl;
+    std::cout << "  Supported: " << dryResult.supported << std::endl;
+    std::cout << "  Executed: " << dryResult.executed << std::endl;
+    std::cout << "  Device Type: " << deviceTypeToString(dryResult.deviceType) << std::endl;
+    std::cout << "  Message: " << dryResult.message << std::endl;
     
-    if (confirmation != "YES ERASE") {
-        std::cout << "Cancelled." << std::endl;
-        return 0;
-    }
-    
-    bool success = ataSecureErase(testDrive, false);
-    return success ? 0 : 1;
+    return 0;
 }
 #endif

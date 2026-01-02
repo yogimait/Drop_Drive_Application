@@ -1,445 +1,561 @@
-# DropDrive NIST 800-88 Purge and Destroy Testing Guide
+# DropDrive Purge Testing Guide
 
-## ⚠️ CRITICAL SAFETY WARNING ⚠️
-
-**NEVER TEST THIS ON:**
-- System drives (C:\\ or any primary OS drive)
-- Drives with important data
-- Production drives
-- Drives you cannot afford to lose
-
-**ONLY TEST ON:**
-- Cheap, expendable USB flash drives (4GB-32GB recommended)
-- Drives you are prepared to completely lose forever
-- Drives clearly labeled as "TEST ONLY"
+> **Official Testing Documentation for NIST 800-88 Purge Operations**
 
 ---
 
-## Prerequisites
+## Table of Contents
 
-### Hardware Requirements
-1. **Test USB Drive**: A cheap USB flash drive that you can completely destroy
-   - Recommended: 8GB-16GB USB 2.0 or USB 3.0
-   - Cost: $5-15 (expendable)
-   - Label it clearly: "TEST - WIPE ONLY"
-
-2. **Computer**: Windows 10/11 with Administrator privileges
-
-3. **Optional**: Second computer for verification (not strictly necessary)
-
-### Software Requirements
-1. Visual Studio Build Tools (already installed if you've built the project before)
-2. node-gyp
-3. Administrator Command Prompt
+1. [Understanding NIST 800-88 Purge](#understanding-nist-800-88-purge)
+2. [Why Most USB Devices Cannot Be Purged](#why-most-usb-devices-cannot-be-purged)
+3. [Failure ≠ Bug: Understanding Expected Behavior](#failure--bug-understanding-expected-behavior)
+4. [Safety Rules for Testing](#safety-rules-for-testing)
+5. [Certificate Labeling Rules](#certificate-labeling-rules)
+6. [Test Outcomes and Interpretation](#test-outcomes-and-interpretation)
+7. [Compliance Language Guidelines](#compliance-language-guidelines)
 
 ---
 
-##Step 1: Build the Native Addon
+## Understanding NIST 800-88 Purge
 
-Open an **Administrator Command Prompt** and navigate to the native directory:
+### What is Purge?
 
-```bash
-cd c:\Users\Hp\Desktop\Disk_cleaner\DropDrive_forked\native
-npx node-gyp rebuild
-```
+According to **NIST Special Publication 800-88 Rev. 1** ("Guidelines for Media Sanitization"), **Purge** is defined as:
 
-**Expected Output:**
-```
-Building the projects in this solution one at a time...
-wipeAddon.vcxproj -> c:\Users\Hp\Desktop\Disk_cleaner\DropDrive_forked\native\build\Release\wipeAddon.node
-```
+> *"A physical or logical technique that renders Target Data recovery infeasible using state-of-the-art laboratory techniques."*
 
-**If build fails:**
-- Check that all source files exist
-- Verify Visual Studio Build Tools are installed
-- Check for compilation errors (usually missing headers)
+This is fundamentally different from **Clear** (overwriting with zeros/random data):
 
----
+| Sanitization Level | Definition | Recovery Resistance |
+|-------------------|------------|---------------------|
+| **Clear** | Overwrite with non-sensitive data | Resists keyboard attacks and simple data recovery tools |
+| **Purge** | Renders data infeasible to recover | Resists state-of-the-art laboratory techniques |
+| **Destroy** | Physical destruction | Complete media destruction |
 
-## Step 2: Identify Your Test Drive
+### How Purge Actually Works
 
-**CRITICAL: Make absolutely sure you're identifying the correct drive!**
+True Purge operations require **direct access to the storage controller firmware** to execute manufacturer-specific commands:
 
-### Method 1: Using Disk Management
-1. Press `Win + X` → Disk Management
-2. Insert your test USB drive
-3. Identify it by size and label
-4. Note the **Disk number** (e.g., Disk 1, Disk 2, etc.)
-5. The PhysicalDrive path will be: `\\\\.\\PhysicalDrive<NUMBER>`
-   - Example: Disk 1 = `\\\\.\\PhysicalDrive1`
+- **ATA Secure Erase** – For SATA/IDE drives
+- **ATA Enhanced Secure Erase** – For SSDs with encryption
+- **NVMe Format** – For NVMe drives with cryptographic erase
+- **SCSI SANITIZE** – For enterprise SAS drives
+- **Block Erase / Cryptographic Erase** – For self-encrypting drives (SEDs)
 
-### Method 2: Using diskpart
-```bash
-# Open Command Prompt as Administrator
-diskpart
-list disk
-
-# Output example:
-#   Disk 0    476 GB   (Your main drive - DON'T TOUCH)
-#   Disk 1      8 GB   (Your USB test drive - THIS ONE)
-
-exit
-```
-
-**Double-check:** The test drive should be:
-- Much smaller than your main drive
-- Removable
-- Not in use by any applications
-
-**Write down your test drive path:**
-```
-My test drive: \\\\.\\PhysicalDrive____  (fill in the number)
-```
+> [!IMPORTANT]
+> **Purge is NOT multi-pass overwriting.** Writing zeros 35 times is still **Clear**, not Purge. The distinction is about the *mechanism*, not the *effort*.
 
 ---
 
-## Step 3: Create a Test Script
+## Why Most USB Devices Cannot Be Purged
 
-Create a file: `c:\Users\Hp\Desktop\Disk_cleaner\DropDrive_forked\electron\testPurgeDestroy.js`
+### The Technical Reality
+
+Most USB flash drives and external HDDs connected via USB **do not support Purge commands** because:
+
+1. **USB Mass Storage Protocol Limitation**
+   - USB Mass Storage Class (MSC) uses a simplified SCSI command set
+   - ATA Secure Erase and SANITIZE commands are **not transmitted** through USB-to-SATA bridges
+   - The USB controller intercepts and translates commands, blocking low-level operations
+
+2. **Controller Firmware Restrictions**
+   - USB flash drive controllers typically do not implement secure erase
+   - Even if the NAND flash supports it, the controller doesn't expose the capability
+   - No standardized "USB Secure Erase" command exists
+
+3. **Bridge Chip Blocking**
+   - External USB HDDs use USB-SATA bridge chips (e.g., ASMedia, JMicron)
+   - These bridges block ATA security commands for safety reasons
+   - Some bridges can be put in "passthrough" mode, but this is rare and risky
+
+### What This Means for DropDrive
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Attempting Purge on USB Device                             │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  DropDrive → USB Controller → [BLOCKED] → Drive Firmware   │
+│                    │                                        │
+│                    └── ATA Secure Erase command rejected    │
+│                                                             │
+│  Result: PURGE FAILED (Expected Behavior)                   │
+│  Fallback: Clear operation (overwrite) still possible       │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+> [!NOTE]
+> **This is not a bug.** DropDrive correctly reports that Purge is unavailable when the hardware doesn't support it. This is honest, compliant behavior.
+
+---
+
+## Failure ≠ Bug: Understanding Expected Behavior
+
+### When "Failure" Is Correct
+
+A Purge operation "failing" on a USB device is **expected and correct behavior**. Consider these scenarios:
+
+| Scenario | Purge Result | Is This a Bug? | Why? |
+|----------|--------------|----------------|------|
+| USB flash drive | ❌ Failed | **No** | USB MSC doesn't support ATA Secure Erase |
+| External USB HDD | ❌ Failed | **No** | USB-SATA bridge blocks security commands |
+| Internal SATA SSD | ✅ Success | N/A | Direct SATA connection supports commands |
+| NVMe SSD | ✅ Success | N/A | NVMe Format command available |
+| Old USB drive (no controller) | ❌ Failed | **No** | Hardware limitation, not software |
+
+### What Would Be a Bug?
+
+The following scenarios **would** indicate bugs in DropDrive:
+
+- ❌ Reporting "Purge Successful" when no ATA command was executed
+- ❌ Crashing instead of gracefully handling unsupported operations
+- ❌ Issuing a certificate labeled "Purge" when only Clear was performed
+- ❌ Not attempting Purge at all on capable hardware
+- ❌ Corrupting the device without proper error handling
+
+### Correct DropDrive Behavior
+
+```
+User requests: Purge on USB drive
+    │
+    ├── DropDrive attempts ATA Secure Erase
+    │       │
+    │       └── USB controller rejects command
+    │               │
+    │               ├── DropDrive detects failure
+    │               │
+    │               ├── Logs: "Purge not supported on this device"
+    │               │
+    │               ├── Offers fallback: "Would you like to perform Clear instead?"
+    │               │
+    │               └── If Clear performed → Certificate says "Clear" (NOT Purge)
+    │
+    └── This is CORRECT, COMPLIANT behavior
+```
+
+---
+
+## Safety Rules for Testing
+
+> [!CAUTION]
+> **Data destruction is irreversible.** Follow these rules to prevent catastrophic data loss during development and testing.
+
+### Rule 1: Never Test on OS Drives
+
+```
+❌ NEVER target:
+   • C:\ (Windows system drive)
+   • / or /home (Linux root/home partitions)
+   • Any drive containing your operating system
+   • Any drive with data you need
+
+✅ ALWAYS verify the target drive BEFORE any wipe operation
+```
+
+**Why this matters:** A wipe operation on your OS drive will render your system unbootable. There is no "undo" button.
+
+### Rule 2: Use Only Expendable Devices
+
+Before testing, acquire dedicated test media:
+
+| Recommended Test Devices | Capacity | Purpose |
+|--------------------------|----------|---------|
+| Cheap USB flash drives | 4-16 GB | Quick Clear/Purge testing |
+| Old external HDDs | Any | Full wipe cycle testing |
+| Spare SSDs | Any | ATA Secure Erase testing |
+| Virtual disk images | Any | Safe dryRun development |
+
+> [!TIP]
+> Label your test devices clearly: **"TEST ONLY - WIPE OK"**
+
+### Rule 3: Prefer dryRun for Development
+
+During development, **always use dryRun mode** unless testing actual wipe functionality:
 
 ```javascript
-const path = require('path');
+// ✅ Safe development testing
+const result = await startWipe({
+  device: targetDevice,
+  method: 'purge',
+  dryRun: true  // No actual writes occur
+});
 
-// Load the native addon
-const addonPath = path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
-const addon = require(addonPath);
+// ❌ Only for final validation on expendable devices
+const result = await startWipe({
+  device: targetDevice,
+  method: 'purge',
+  dryRun: false  // REAL DESTRUCTIVE OPERATION
+});
+```
 
-// ⚠️ CHANGE THIS TO YOUR TEST DRIVE!
-const TEST_DRIVE = '\\\\.\\PhysicalDrive1';  // VERIFY THIS IS YOUR USB DRIVE!
+### Rule 4: Triple-Check Before Execution
 
-console.log('='.repeat(60));
-console.log('NIST 800-88 Purge/Destroy Test Script');
-console.log('='.repeat(60));
-console.log(`Test Drive: ${TEST_DRIVE}`);
-console.log('');
-console.log('Available methods:');
-console.log('  1. ATA Secure Erase (purge)');
-console.log('  2. NVMe Sanitize - Crypto Erase (purge)');
-console.log('  3. Crypto Erase (purge)');
-console.log('  4. Destroy Drive (destroy)');
-console.log('='.repeat(60));
+Before any non-dryRun wipe:
 
-// Check available addon functions
-console.log('\\nAvailable addon functions:');
-console.log(Object.keys(addon));
+1. **Verify device path** – Is this really the test device?
+2. **Check capacity** – Does the size match your test drive?
+3. **Confirm emptiness** – Is there any important data on it?
+4. **Disconnect other drives** – Minimize risk of wrong-target errors
 
-// Test 1: ATA Secure Erase (if supported)
-function testATASecureErase() {
-    console.log('\\n--- Testing ATA Secure Erase ---');
-    console.log('⚠️  WARNING: This will ERASE ALL DATA on ' + TEST_DRIVE);
-    console.log('Press Ctrl+C now to cancel!');
-    
-    setTimeout(() => {
-        try {
-            const result = addon.ataSecureErase(TEST_DRIVE, false);
-            console.log('Result:', result ? 'SUCCESS' : 'FAILED');
-        } catch (error) {
-            console.error('Error:', error.message);
-        }
-    }, 5000);  // 5 second countdown
-}
+### Rule 5: Development Environment Isolation
 
-// Test 2: NVMe Sanitize Crypto Erase (if supported)
-function testNVMeSanitize() {
-    console.log('\\n--- Testing NVMe Sanitize (Crypto Erase) ---');
-    console.log('⚠️  WARNING: This will ERASE ALL DATA on ' + TEST_DRIVE);
-    console.log('Press Ctrl+C now to cancel!');
-    
-    setTimeout(() => {
-        try {
-            const result = addon.nvmeSanitize(TEST_DRIVE, 'crypto');
-            console.log('Result:', result ? 'SUCCESS' : 'FAILED');
-        } catch (error) {
-            console.error('Error:', error.message);
-        }
-    }, 5000);
-}
-
-// Test 3: Crypto Erase (auto-detect method)
-function testCryptoErase() {
-    console.log('\\n--- Testing Crypto Erase (Auto-Detect) ---');
-    console.log('⚠️  WARNING: This will ERASE ALL DATA on ' + TEST_DRIVE);
-    console.log('Press Ctrl+C now to cancel!');
-    
-    setTimeout(() => {
-        try {
-            const result = addon.cryptoErase(TEST_DRIVE);
-            console.log('Result:', result ? 'SUCCESS' : 'FAILED');
-        } catch (error) {
-            console.error('Error:', error.message);
-        }
-    }, 5000);
-}
-
-// Test 4: Destroy Drive (MOST DESTRUCTIVE)
-function testDestroyDrive() {
-    console.log('\\n--- Testing DESTROY Drive ---');
-    console.log('⚠️⚠️⚠️  CRITICAL WARNING  ⚠️⚠️⚠️');
-    console.log('This will:');
-    console.log('  - Perform 35-pass Gutmann wipe');
-    console.log('  - Destroy partition tables');
-    console.log('  - Make the drive UNBOOTABLE');
-    console.log('  - Take SEVERAL HOURS for larger drives');
-    console.log('');
-    console.log('Target: ' + TEST_DRIVE);
-    console.log('Press Ctrl+C NOW to cancel!');
-    
-    setTimeout(() => {
-        try {
-            // Note: confirm=true is required
-            const result = addon.destroyDrive(TEST_DRIVE, true);
-            console.log('Result:', result ? 'SUCCESS  - Drive completely destroyed' : 'FAILED');
-        } catch (error) {
-            console.error('Error:', error.message);
-        }
-    }, 10000);  // 10 second countdown for destroy
-}
-
-// Uncomment only ONE test at a time:
-
-// testATASecureErase();      // Test ATA Secure Erase
-// testNVMeSanitize();        // Test NVMe Sanitize
-// testCryptoErase();         // Test Crypto Erase
-// testDestroyDrive();        // Test DESTROY (most dangerous)
-
-console.log('\\nTo run a test, uncomment one of the test functions at the bottom of this file.');
-console.log('Then run: node electron/testPurgeDestroy.js');
+```
+Recommended setup:
+┌─────────────────────────────────────────┐
+│  Development Machine                    │
+│  ├── OS Drive (C:) - NEVER TARGET      │
+│  ├── Data Drive (D:) - NEVER TARGET    │
+│  └── USB Port → Test Device ONLY       │
+│                                         │
+│  All other drives disconnected during   │
+│  wipe testing sessions                  │
+└─────────────────────────────────────────┘
 ```
 
 ---
 
-## Step 4: Testing Each Method
+## Certificate Labeling Rules
 
-### Test A: ATA Secure Erase
+> [!IMPORTANT]
+> **Certificate integrity is paramount.** Mislabeled certificates undermine compliance and trust. DropDrive must never claim a sanitization level that wasn't achieved.
 
-1. **Edit testPurgeDestroy.js:**
-   - Set `TEST_DRIVE` to your USB drive path
-   - Uncomment `testATASecureErase();`
+### Certificate Label Decision Tree
 
-2. **Run the test:**
-   ```bash
-   cd c:\Users\Hp\Desktop\Disk_cleaner\DropDrive_forked
-   node electron/testPurgeDestroy.js
-   ```
-
-3. **Expected behavior:**
-   - 5-second countdown
-   - Security status check
-   - If supported: Executes secure erase (10-30 minutes for USB)
-   - If not supported: Error message
-
-4. **Verification:**
-   - Open Disk Management
-   - Drive should appear as "Unallocated"
-   - Right-click → Initialize Disk → Format to use again
-
-### Test B: NVMe Sanitize
-
-1. **Edit testPurgeDestroy.js:**
-   - Uncomment `testNVMeSanitize();`
-   - Comment out other tests
-
-2. **Run:**
-   ```bash
-   node electron/testPurgeDestroy.js
-   ```
-
-3. **Expected:**
-   - Most USB drives are NOT NVMe
-   - Should see "ERROR: Drive is not an NVMe device"
-   - This is NORMAL - test passes if error is graceful
-
-### Test C: Crypto Erase
-
-1. **Edit testPurgeDestroy.js:**
-   - Uncomment `testCryptoErase();`
-
-2. **Run:**
-   ```bash
-   node electron/testPurgeDestroy.js
-   ```
-
-3. **Expected:**
-   - Detects drive type
-   - Falls back to ATA Secure Erase for most USB drives
-   - Should complete successfully
-
-### Test D: DESTROY Drive (Use Smallest USB Drive!)
-
-**⚠️ THIS WILL TAKE SEVERAL HOURS! Use the smallest USB drive you have (4-8GB recommended).**
-
-1. **Edit testPurgeDestroy.js:**
-   - Uncomment `testDestroyDrive();`
-
-2. **Run:**
-   ```bash
-   node electron/testPurgeDestroy.js
-   ```
-
-3. **Expected:**
-   - 10-second countdown
-   - Gutmann 35-pass wipe (VERY SLOW - hours for 8GB)
-   - Partition table destruction
-   - Final random pass
-
-4. **Time estimates:**
-   - 4GB USB: 2-4 hours
-   - 8GB USB: 4-8 hours
-   - 16GB USB: 8-16 hours
-
-5. **Verification after destroy:**
-   - Drive will NOT appear in File Explorer
-   - In Disk Management: Shows as "Unknown" or "Not Initialized"
-   - **Recovery:**
-     ```bash
-     diskpart
-     list disk
-     select disk <number>
-     clean
-     create partition primary
-     format fs=ntfs quick
-     assign
-     exit
-     ```
-
----
-
-## Step 5: Integration Testing (Optional)
-
-Test from the Electron app UI:
-
-1. **Run the app:**
-   ```bash
-   npm run dev:all
-   ```
-
-2. **Navigate to Wipe Process**
-
-3. **Select your TEST USB drive**
-
-4. **Choose a Purge or Destroy method**
-
-5. **Confirm warnings**
-
-6. **Monitor progress**
-
-7. **Check certificate generation**
-
----
-
-## Success Criteria
-
-✅ **Build succeeds** without errors  
-✅ **Addon loads** correctly  
-✅ **Device detection** works (graceful errors for unsupported operations)  
-✅ **ATA Secure Erase** completes on supported drives  
-✅ **NVMe methods** fail gracefully on non-NVMe drives  
-✅ **Destroy** completes and makes drive unbootable  
-✅ **No application crashes**  
-✅ **Certificates generated** with correct NIST profiles  
-
----
-
-## Troubleshooting
-
-### Build Errors
-
-**nvme.h not found:**
-- Windows SDK might be outdated
-- Update to latest Windows SDK via Visual Studio Installer
-
-**Compilation errors:**
-- Check C++17 support in Visual Studio Build Tools
-- Verify all source files are in correct locations
-
-### Runtime Errors
-
-**"Drive is frozen":**
-- Reboot computer
-- Try a different USB port
-- Some drives are permanently frozen - use a different drive
-
-**"Not an NVMe device":**
-- This is expected for most USB drives
-- NVMe USB adapters are rare and expensive
-
-**Operation hangs:**
-- ATA Secure Erase can take hours for large drives
-- Check Task Manager for disk activity
-- If truly hung, may need to power cycle drive
-
-### Recovery
-
-**Drive not recognized after wipe:**
-```bash
-# Open Command Prompt as Administrator
-diskpart
-list disk
-select disk <number>
-clean
-create partition primary
-format fs=ntfs quick
-assign
-exit
+```
+Was Purge command (ATA Secure Erase, NVMe Format, etc.) executed successfully?
+    │
+    ├── YES → Certificate Label: "Purge"
+    │         NIST Profile: "Purge"
+    │         Method: "ATA Secure Erase" / "NVMe Format" / etc.
+    │
+    └── NO → Was this a dryRun simulation?
+              │
+              ├── YES → Certificate Label: "Purge (Simulated)"
+              │         NIST Profile: "Purge (Simulated - No Data Modified)"
+              │         Method: "DryRun - No actual sanitization"
+              │
+              └── NO → Was a fallback Clear operation performed?
+                        │
+                        ├── YES → Certificate Label: "Clear"
+                        │         NIST Profile: "Clear"
+                        │         Method: "Overwrite" / "Zero Fill" / etc.
+                        │         Note: "Purge not supported; Clear performed"
+                        │
+                        └── NO → Was physical destruction performed?
+                                  │
+                                  ├── YES → Certificate Label: "Destroy"
+                                  │
+                                  └── NO → NO CERTIFICATE ISSUED
+                                            Operation: Failed/Incomplete
 ```
 
-**Error 5 (Access Denied):**
-- Run Command Prompt as Administrator
-- Close any applications accessing the drive
+### Label Definitions
+
+| Certificate Label | When to Use | NIST Compliance |
+|-------------------|-------------|-----------------|
+| **Purge** | ATA Secure Erase, NVMe Format, or equivalent executed and verified | Meets NIST 800-88 Purge |
+| **Purge (Simulated)** | dryRun mode; no actual sanitization occurred | NOT compliant; for testing only |
+| **Clear** | Overwrite operation completed; Purge not available or not attempted | Meets NIST 800-88 Clear |
+| **Destroy** | Physical destruction documented | Meets NIST 800-88 Destroy |
+| **No Certificate** | Operation failed or incomplete | No claim made |
+
+### What to NEVER Do
+
+```
+❌ NEVER label as "Purge" when:
+   • Only overwrite (Clear) was performed
+   • Purge command failed and fell back to Clear
+   • dryRun was used (use "Purge (Simulated)" instead)
+   • Operation was incomplete or errored
+
+❌ NEVER issue a certificate when:
+   • The operation did not complete successfully
+   • The target device could not be verified
+   • The method used is unknown or unverified
+```
+
+### Certificate Field Requirements
+
+Every DropDrive certificate must include:
+
+```json
+{
+  "certificate_id": "uuid",
+  "timestamp_utc": "ISO-8601 timestamp",
+  "sanitization_level": "Clear | Purge | Purge (Simulated) | Destroy",
+  "method_attempted": "What was tried",
+  "method_executed": "What actually happened",
+  "device_info": {
+    "serial": "If available",
+    "model": "Device model",
+    "capacity": "Size",
+    "interface": "USB | SATA | NVMe | etc."
+  },
+  "purge_supported": true | false,
+  "purge_attempted": true | false,
+  "purge_succeeded": true | false,
+  "fallback_used": true | false,
+  "fallback_method": "Clear | None",
+  "verification_performed": true | false,
+  "notes": "Any relevant context"
+}
+```
 
 ---
 
-## Notes for Production Use
+## Test Outcomes and Interpretation
 
-1. **Always show multiple warnings** before execute
-2. **Require explicit user confirmation** for Destroy
-3. **Show estimated time** (can be hours)
-4. **Add progress callbacks** for long operations
-5. **Log all operations** for audit trails
-6. **Test on various** drive types and sizes
-7. **Consider timeout handling** for very long operations
+### Example Test Scenarios
 
----
+#### Scenario 1: USB Flash Drive - Purge Attempted
 
-## Safety Checklist
+```
+Device: SanDisk Cruzer 16GB (USB 3.0)
+Interface: USB Mass Storage
+Requested Method: Purge
 
-Before running ANY test:
+Test Execution:
+  [14:30:01] Attempting ATA Secure Erase...
+  [14:30:01] Sending SECURITY_SET_PASSWORD command
+  [14:30:01] ERROR: Command rejected by USB controller
+  [14:30:01] Purge not supported on this interface
+  [14:30:02] Prompting user for fallback option...
+  [14:30:15] User selected: Clear (Zero Fill)
+  [14:30:15] Beginning Clear operation...
+  [14:45:30] Clear completed successfully
 
-- [ ] I am using a TEST USB drive with NO important data
-- [ ] I have verified the PhysicalDrive number multiple times
-- [ ] The drive is NOT my system drive (C:\\)
-- [ ] I am running as Administrator
-- [ ] I understand this will ERASE ALL DATA
-- [ ] I am prepared for the operation to take hours (for Destroy)
-- [ ] I have read and understand the recovery procedures
+Result:
+  ✅ EXPECTED BEHAVIOR
+  Certificate Issued: Clear
+  Notes: "Purge not supported via USB interface; Clear performed as fallback"
+```
 
----
-
-## Emergency Stop
-
-If you need to stop an operation:
-
-1. **DO NOT** pull out the USB drive during operation
-2. Press `Ctrl+C` in the terminal (if operation hasn't started yet)
-3. For running operations:
-   - ATA Secure Erase: Cannot be stopped once started
-   - Other operations: Can terminate with Task Manager
-
-**After emergency stop:**
-- Drive may be in inconsistent state
-- Use diskpart recovery procedure above
-- May need to low-level format
+**Interpretation:** This is correct. USB flash drives cannot be purged. DropDrive correctly detected the limitation, offered a fallback, and issued an honest certificate.
 
 ---
 
-## Contact
+#### Scenario 2: Internal SATA SSD - Purge Successful
 
-If you encounter issues:
-1. Check the error messages carefully
-2. Verify you're testing on the correct drive
-3. Check Windows Event Viewer for system errors
-4. Document the exact steps that led to the error
+```
+Device: Samsung 860 EVO 500GB
+Interface: SATA (direct connection)
+Requested Method: Purge
+
+Test Execution:
+  [14:30:01] Attempting ATA Secure Erase...
+  [14:30:01] Sending SECURITY_SET_PASSWORD command
+  [14:30:01] Command accepted
+  [14:30:02] Sending SECURITY_ERASE_UNIT command
+  [14:30:02] Drive firmware executing secure erase...
+  [14:32:45] Secure erase completed
+  [14:32:45] Verifying erase status...
+  [14:32:46] Verification passed
+
+Result:
+  ✅ PURGE SUCCESSFUL
+  Certificate Issued: Purge
+  Method: ATA Secure Erase
+  Notes: "Purge completed successfully via ATA Secure Erase"
+```
+
+**Interpretation:** SATA SSDs support ATA Secure Erase when directly connected. This is a valid Purge operation.
 
 ---
 
-**Remember: These operations are IRREVERSIBLE. Always test on expendable drives!**
+#### Scenario 3: USB External HDD - Purge Failed, No Fallback
+
+```
+Device: Seagate Expansion 2TB (USB 3.0)
+Interface: USB Mass Storage (with SATA bridge)
+Requested Method: Purge
+
+Test Execution:
+  [14:30:01] Attempting ATA Secure Erase...
+  [14:30:01] Sending SECURITY_SET_PASSWORD command
+  [14:30:01] ERROR: USB-SATA bridge blocked command
+  [14:30:01] Purge not supported on this interface
+  [14:30:02] Prompting user for fallback option...
+  [14:30:10] User selected: Cancel operation
+
+Result:
+  ✅ EXPECTED BEHAVIOR
+  Certificate Issued: NONE
+  Notes: Operation cancelled by user; no sanitization performed
+```
+
+**Interpretation:** User declined fallback. No certificate is issued because no sanitization occurred. This is correct.
+
+---
+
+#### Scenario 4: Development Testing with dryRun
+
+```
+Device: Test Device (simulated)
+Interface: Virtual
+Requested Method: Purge
+Mode: dryRun = true
+
+Test Execution:
+  [14:30:01] DRY RUN MODE - No actual writes will occur
+  [14:30:01] Simulating Purge operation...
+  [14:30:01] Would attempt: ATA Secure Erase
+  [14:30:02] Simulation complete
+
+Result:
+  ✅ EXPECTED BEHAVIOR
+  Certificate Issued: Purge (Simulated)
+  Notes: "DRY RUN - No data was modified. For testing purposes only."
+```
+
+**Interpretation:** dryRun certificates are clearly marked as simulations and explicitly state no data was modified.
+
+---
+
+#### Scenario 5: NVMe SSD - Purge via Format Command
+
+```
+Device: WD Black SN750 1TB
+Interface: NVMe (PCIe)
+Requested Method: Purge
+
+Test Execution:
+  [14:30:01] Detecting NVMe capabilities...
+  [14:30:01] NVMe Format with Secure Erase supported
+  [14:30:02] Sending NVMe Format command (SES=1)...
+  [14:30:02] Drive firmware executing cryptographic erase...
+  [14:30:08] Format completed
+  [14:30:08] Verifying namespace status...
+  [14:30:09] Verification passed
+
+Result:
+  ✅ PURGE SUCCESSFUL
+  Certificate Issued: Purge
+  Method: NVMe Format (Cryptographic Erase)
+  Notes: "Purge completed successfully via NVMe Format command"
+```
+
+**Interpretation:** NVMe drives support Purge through the Format command with Secure Erase Settings (SES). This is a valid Purge.
+
+---
+
+### Quick Reference: Outcome Matrix
+
+| Device Type | Interface | Purge Support | Expected Outcome |
+|-------------|-----------|---------------|------------------|
+| USB Flash Drive | USB MSC | ❌ No | Purge fails → Offer Clear |
+| USB External HDD | USB MSC + Bridge | ❌ No | Purge fails → Offer Clear |
+| Internal SATA HDD | SATA | ✅ Yes | Purge via ATA Secure Erase |
+| Internal SATA SSD | SATA | ✅ Yes | Purge via ATA Secure Erase |
+| NVMe SSD | PCIe | ✅ Yes | Purge via NVMe Format |
+| SD Card | SD/MMC | ❌ No | Purge fails → Offer Clear |
+| Enterprise SAS | SAS | ✅ Yes | Purge via SCSI SANITIZE |
+
+---
+
+## Compliance Language Guidelines
+
+### Honest Reporting Principles
+
+DropDrive adheres to these principles for all compliance claims:
+
+1. **Never overstate capabilities**
+   - If Purge fails, say "Purge not supported" — not "Purge failed due to error"
+   - Distinguish between "cannot do" and "tried but failed"
+
+2. **Never understate limitations**
+   - USB devices cannot be purged via DropDrive — state this clearly
+   - Don't hide limitations in fine print
+
+3. **Use precise terminology**
+   - "Clear" means overwrite
+   - "Purge" means firmware-level secure erase
+   - "Destroy" means physical destruction
+   - Never conflate these terms
+
+### Recommended Language for UI/Certificates
+
+#### When Purge is NOT Supported
+
+```
+Title: "Purge Not Available"
+
+Message: "This device does not support Purge operations via its current 
+interface. USB-connected devices typically cannot receive ATA Secure Erase 
+or equivalent commands.
+
+Alternative: You may perform a Clear operation, which overwrites all data 
+with zeros or random patterns. Clear meets NIST 800-88 requirements for 
+many use cases but does not provide the same level of assurance as Purge."
+
+Options: [Perform Clear] [Cancel]
+```
+
+#### When Purge Succeeds
+
+```
+Certificate Statement:
+"This device was sanitized using [ATA Secure Erase / NVMe Format / etc.], 
+which meets the NIST SP 800-88 Rev. 1 definition of Purge. Data recovery 
+using state-of-the-art laboratory techniques is considered infeasible."
+```
+
+#### When Clear is Performed as Fallback
+
+```
+Certificate Statement:
+"Purge was not available for this device due to interface limitations. 
+A Clear operation was performed instead, overwriting all accessible 
+storage with [zeros / random data]. This meets the NIST SP 800-88 Rev. 1 
+definition of Clear. Data recovery may be possible using advanced 
+laboratory techniques."
+```
+
+#### For dryRun/Simulated Operations
+
+```
+Certificate Header: "⚠️ SIMULATION ONLY - NOT A VALID SANITIZATION CERTIFICATE"
+
+Statement:
+"This certificate was generated in DRY RUN mode. NO DATA WAS MODIFIED OR 
+DESTROYED. This document is for testing and development purposes only and 
+does not represent any actual sanitization activity."
+```
+
+### Language to Avoid
+
+| ❌ Avoid | ✅ Use Instead |
+|----------|----------------|
+| "Military-grade wipe" (vague) | "DoD 5220.22-M compliant Clear" (specific) |
+| "Unrecoverable" (absolute) | "Recovery infeasible using current techniques" |
+| "Completely secure" (unprovable) | "Meets NIST 800-88 [Clear/Purge] requirements" |
+| "100% guaranteed" (liability risk) | "Performed according to [standard]" |
+| "Purge performed" (when Clear was done) | "Clear performed (Purge not available)" |
+
+---
+
+## Summary
+
+### Key Takeaways
+
+1. **Purge ≠ Multi-pass overwrite** — Purge requires firmware-level commands
+2. **USB devices cannot be purged** — This is a hardware limitation, not a bug
+3. **Failure is expected** — DropDrive correctly reports when Purge isn't available
+4. **Certificates must be honest** — Only label as "Purge" when Purge was executed
+5. **Safety first** — Never test on production drives; use dryRun during development
+
+### Compliance Philosophy
+
+> DropDrive's value is in its **honesty**. We don't claim capabilities we don't have. 
+> When Purge isn't possible, we say so clearly and offer appropriate alternatives. 
+> This transparency builds trust and ensures our certificates are meaningful.
+
+---
+
+**Document Version:** 1.0.0  
+**Last Updated:** December 2024  
+**Applicable Standards:** NIST SP 800-88 Rev. 1
+
+---
+
+*This guide is part of official DropDrive documentation. For questions or corrections, contact the development team.*

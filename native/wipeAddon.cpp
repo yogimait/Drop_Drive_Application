@@ -5,10 +5,12 @@
 #include <chrono>
 #include <algorithm>
 
-// Forward declarations for purge and destroy methods
-extern bool ataSecureErase(const std::string& drivePath, bool useEnhanced);
-extern bool nvmeSanitize(const std::string& drivePath, const std::string& action);
-extern bool cryptoErase(const std::string& drivePath);
+// Forward declarations for purge and destroy methods (with PurgeResult)
+#include "wipeMethods/purge/purgeCommon.h"
+
+extern PurgeResult ataSecureErase(const std::string& drivePath, bool useEnhanced, bool dryRun);
+extern PurgeResult nvmeSanitize(const std::string& drivePath, const std::string& action, bool dryRun);
+extern PurgeResult cryptoErase(const std::string& drivePath, bool dryRun);
 extern bool destroyDrive(const std::string& drivePath, bool confirmDestroy);
 
 #ifdef _WIN32
@@ -351,67 +353,126 @@ Napi::Value GetDeviceInfo(const Napi::CallbackInfo& info) {
     return deviceInfo;
 }
 
-// N-API wrapper for ATA Secure Erase
+// Helper to convert PurgeResult to Napi::Object
+static Napi::Object purgeResultToNapi(Napi::Env env, const PurgeResult& pr) {
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("success", Napi::Boolean::New(env, pr.success));
+    result.Set("supported", Napi::Boolean::New(env, pr.supported));
+    result.Set("executed", Napi::Boolean::New(env, pr.executed));
+    result.Set("device_type", Napi::String::New(env, deviceTypeToString(pr.deviceType)));
+    result.Set("purge_method", Napi::String::New(env, purgeMethodToString(pr.method)));
+    result.Set("status", Napi::String::New(env, pr.status));
+    result.Set("message", Napi::String::New(env, pr.message));
+    result.Set("reason", Napi::String::New(env, pr.reason));
+    result.Set("device_path", Napi::String::New(env, pr.devicePath));
+    result.Set("error_code", Napi::Number::New(env, pr.errorCode));
+    return result;
+}
+
+// N-API wrapper for ATA Secure Erase - returns structured object
 Napi::Value ATASecureErase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 1 || !info[0].IsString()) {
-        Napi::TypeError::New(env, "Device path required").ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "error";
+        pr.message = "Device path required";
+        pr.reason = "First argument must be a device path string";
+        return purgeResultToNapi(env, pr);
     }
     
     std::string path = info[0].As<Napi::String>();
     bool enhanced = (info.Length() >= 2 && info[1].IsBoolean()) ? info[1].As<Napi::Boolean>().Value() : false;
+    bool dryRun = (info.Length() >= 3 && info[2].IsBoolean()) ? info[2].As<Napi::Boolean>().Value() : true;
     
     try {
-        bool result = ataSecureErase(path, enhanced);
-        return Napi::Boolean::New(env, result);
+        PurgeResult pr = ataSecureErase(path, enhanced, dryRun);
+        return purgeResultToNapi(env, pr);
     } catch (const std::exception& e) {
-        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.devicePath = path;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "exception";
+        pr.message = "Exception during ATA Secure Erase";
+        pr.reason = e.what();
+        return purgeResultToNapi(env, pr);
     }
 }
 
-// N-API wrapper for NVMe Sanitize
+// N-API wrapper for NVMe Sanitize - returns structured object
 Napi::Value NVMeSanitize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
-        Napi::TypeError::New(env, "Device path and action required").ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "error";
+        pr.message = "Device path and action required";
+        pr.reason = "Arguments: devicePath (string), action (string: crypto/block/overwrite), dryRun (bool)";
+        return purgeResultToNapi(env, pr);
     }
     
     std::string path = info[0].As<Napi::String>();
     std::string action = info[1].As<Napi::String>();
+    bool dryRun = (info.Length() >= 3 && info[2].IsBoolean()) ? info[2].As<Napi::Boolean>().Value() : true;
     
     try {
-        bool result = nvmeSanitize(path, action);
-        return Napi::Boolean::New(env, result);
+        PurgeResult pr = nvmeSanitize(path, action, dryRun);
+        return purgeResultToNapi(env, pr);
     } catch (const std::exception& e) {
-        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.devicePath = path;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "exception";
+        pr.message = "Exception during NVMe Sanitize";
+        pr.reason = e.what();
+        return purgeResultToNapi(env, pr);
     }
 }
 
-// N-API wrapper for Crypto Erase
+// N-API wrapper for Crypto Erase - returns structured object
 Napi::Value CryptoErase(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     
     if (info.Length() < 1 || !info[0].IsString()) {
-        Napi::TypeError::New(env, "Device path required").ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "error";
+        pr.message = "Device path required";
+        pr.reason = "First argument must be a device path string";
+        return purgeResultToNapi(env, pr);
     }
     
     std::string path = info[0].As<Napi::String>();
+    bool dryRun = (info.Length() >= 2 && info[1].IsBoolean()) ? info[1].As<Napi::Boolean>().Value() : true;
     
     try {
-        bool result = cryptoErase(path);
-        return Napi::Boolean::New(env, result);
+        PurgeResult pr = cryptoErase(path, dryRun);
+        return purgeResultToNapi(env, pr);
     } catch (const std::exception& e) {
-        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
-        return env.Null();
+        PurgeResult pr;
+        pr.devicePath = path;
+        pr.success = false;
+        pr.supported = false;
+        pr.executed = false;
+        pr.status = "exception";
+        pr.message = "Exception during Crypto Erase";
+        pr.reason = e.what();
+        return purgeResultToNapi(env, pr);
     }
 }
+
 
 // N-API wrapper for Destroy Drive
 Napi::Value DestroyDrive(const Napi::CallbackInfo& info) {
