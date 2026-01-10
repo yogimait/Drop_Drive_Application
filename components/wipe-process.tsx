@@ -7,6 +7,8 @@ import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import {
   Play,
   Pause,
@@ -18,14 +20,59 @@ import {
   AlertTriangle,
   Settings,
   FileText,
-  TestTube
+  TestTube,
+  Eraser,
+  Trash2,
+  FlaskConical,
+  Info,
+  Zap,
+  AlertCircle,
+  XCircle,
+  ShieldAlert
 } from "lucide-react"
+import { AdminWarningBanner } from "@/components/AdminWarningBanner"
 
 type WipeStatus = "idle" | "running" | "paused" | "completed" | "error" | "cancelled"
+type NistWipeType = "clear" | "purge" | "destroy"
 
 interface WipeLog {
   message: string;
   timestamp: string;
+}
+
+interface PurgeAttempt {
+  method: string;
+  supported: boolean;
+  executed: boolean;
+  success: boolean;
+  error?: string;
+  dryRun?: boolean;
+}
+
+interface PurgeResult {
+  purgeSucceeded: boolean;
+  successfulMethod: string | null;
+  dryRun: boolean;
+  attempts: PurgeAttempt[];
+  fallbackRecommendation?: {
+    methods: string[];
+    reason: string;
+    message: string;
+  };
+  formattedSummary?: string;
+}
+
+interface AdminStatus {
+  isElevated: boolean;
+  message: string;
+  guidance: string[] | null;
+  capabilities: {
+    canWipe: boolean;
+    canPurge: boolean;
+    canTestAddon: boolean;
+    canDryRun: boolean;
+    canViewDrives: boolean;
+  };
 }
 
 interface DriveInfo {
@@ -50,14 +97,22 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
   const [wipeStatus, setWipeStatus] = useState<WipeStatus>("idle")
   const [progress, setProgress] = useState(0)
   const [currentStageText, setCurrentStageText] = useState("")
-  const [wipeMethod, setWipeMethod] = useState("nist-800")
+  const [wipeType, setWipeType] = useState<"clear" | "purge" | "destroy">("clear")
+  const [dryRun, setDryRun] = useState(true) // Default to safe simulation mode
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [loadingDrives, setLoadingDrives] = useState(true);
   const [selectedDrive, setSelectedDrive] = useState<string | null>(null);
   const [currentWipeId, setCurrentWipeId] = useState<string | null>(null);
   const [wipeLogs, setWipeLogs] = useState<WipeLog[]>([]);
   const [estimatedTimeRemaining, setEstimatedTimeRemaining] = useState<number>(0);
-  
+
+  // Purge operation result state
+  const [purgeResult, setPurgeResult] = useState<PurgeResult | null>(null)
+
+  // Admin status state
+  const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null)
+  const [adminStatusLoading, setAdminStatusLoading] = useState(true)
+
   // Track cleanup functions for IPC listeners
   const cleanupFunctions = useRef<Array<() => void>>([]);
 
@@ -74,11 +129,43 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
     }
   };
 
-  const wipeMethods = [
-    { id: "nist-800", name: "NIST 800-88 (1 pass)", description: "NIST purge method for SSDs" },
-    { id: "dod-5220", name: "DoD 5220.22-M (3 passes)", description: "US Department of Defense standard" },
-    { id: "random", name: "Random Data (1 pass)", description: "Fast single pass with random data" },
-    { id: "zero", name: "Zero Fill (1 pass)", description: "Simple zero overwrite method" },
+  // NIST 800-88 sanitization categories - frontend sends intent, backend decides method
+  const wipeTypes = [
+    { id: "clear" as const, name: "Clear", description: "Software overwrite - Fast, suitable for most scenarios" },
+    { id: "purge" as const, name: "Purge", description: "Hardware command - ATA Secure Erase / NVMe Sanitize" },
+    { id: "destroy" as const, name: "Destroy", description: "Multi-pass overwrite + partition destruction" },
+  ]
+
+  // NIST 800-88 Wipe Types
+  const nistWipeTypes = [
+    {
+      id: "clear" as const,
+      name: "Clear",
+      description: "Software overwrite - works on all devices",
+      icon: Eraser,
+      color: "text-blue-500",
+      bgColor: "bg-blue-500/10",
+      borderColor: "border-blue-500/30"
+    },
+    {
+      id: "purge" as const,
+      name: "Purge",
+      description: "Hardware commands - requires compatible drive (SATA/NVMe)",
+      icon: Zap,
+      color: "text-amber-500",
+      bgColor: "bg-amber-500/10",
+      borderColor: "border-amber-500/30",
+      requiresInternal: true
+    },
+    {
+      id: "destroy" as const,
+      name: "Destroy",
+      description: "Maximum security - multi-pass with partition wipe",
+      icon: Trash2,
+      color: "text-red-500",
+      bgColor: "bg-red-500/10",
+      borderColor: "border-red-500/30"
+    }
   ]
 
   // Load drives on component mount
@@ -98,6 +185,75 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
     loadDrives();
   }, []);
 
+  // Check admin status on component mount
+  useEffect(() => {
+    const checkAdminStatus = async () => {
+      try {
+        // @ts-ignore
+        if (typeof window !== 'undefined' && window.api?.getAdminStatus) {
+          // @ts-ignore
+          const status = await window.api.getAdminStatus();
+          console.log('[WipeProcess] Admin status:', status);
+          setAdminStatus(status);
+        } else {
+          // Not in Electron or API not available - assume not elevated
+          console.warn('[WipeProcess] Admin API not available, assuming not elevated');
+          setAdminStatus({
+            isElevated: false,
+            message: 'Admin status check unavailable.',
+            guidance: ['Running outside Electron environment.'],
+            capabilities: {
+              canWipe: false,
+              canPurge: false,
+              canTestAddon: true,
+              canDryRun: true,
+              canViewDrives: true
+            }
+          });
+        }
+      } catch (error) {
+        console.error('[WipeProcess] Failed to check admin status:', error);
+        // Safe default: assume not elevated
+        setAdminStatus({
+          isElevated: false,
+          message: 'Failed to check Administrator status.',
+          guidance: ['Please restart the app as Administrator if you need to perform wipe operations.'],
+          capabilities: {
+            canWipe: false,
+            canPurge: false,
+            canTestAddon: true,
+            canDryRun: true,
+            canViewDrives: true
+          }
+        });
+      } finally {
+        setAdminStatusLoading(false);
+      }
+    };
+
+    checkAdminStatus();
+  }, []);
+
+  // Handler for restarting with elevation
+  const handleRestartElevated = async () => {
+    try {
+      // @ts-ignore
+      if (window.api?.restartElevated) {
+        // @ts-ignore
+        const result = await window.api.restartElevated();
+        if (!result.success) {
+          alert(`Failed to restart as Administrator: ${result.message || result.error}`);
+        }
+        // If successful, the app will restart automatically
+      } else {
+        alert('Elevation restart not available. Please close the app and restart it manually as Administrator.');
+      }
+    } catch (error) {
+      console.error('[WipeProcess] Failed to restart with elevation:', error);
+      alert(`Failed to restart as Administrator: ${error}`);
+    }
+  };
+
   // Set up IPC listeners for wipe events
   useEffect(() => {
     if (typeof window !== 'undefined' && window.api) {
@@ -106,7 +262,7 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
         console.log('Wipe progress:', data);
         setProgress(data.progress || 0);
         setCurrentStageText(data.stage || '');
-        
+
         if (data.logs) {
           setWipeLogs(data.logs.map((log: string) => ({
             message: log,
@@ -115,12 +271,9 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
         }
 
         // Calculate estimated time remaining (rough estimate)
-        if (data.progress > 0) {
-          const timeElapsed = Date.now() - (Date.now() - (data.progress * 1000)); // Rough calculation
-          const estimatedTotal = (timeElapsed / data.progress) * 100;
-          const remaining = Math.max(0, Math.ceil((estimatedTotal - timeElapsed) / (1000 * 60))); // minutes
-          setEstimatedTimeRemaining(remaining);
-        }
+        // Estimation logic removed as native progress granularity is insufficient for accuracy.
+        // We prefer showing nothing over a random guess.
+        setEstimatedTimeRemaining(0);
       });
 
       // @ts-ignore
@@ -189,7 +342,7 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
     }
 
     // Find the selected drive info
-    const selectedDriveInfo = drives.find(drive => 
+    const selectedDriveInfo = drives.find(drive =>
       drive.mountpoints.some(mp => mp.path === selectedDrive)
     );
 
@@ -198,9 +351,14 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
       return;
     }
 
-    // Confirm the operation
-    const confirmMessage = `Are you sure you want to wipe ${selectedDriveInfo.description}?\n\nThis will PERMANENTLY delete all data on the device.\nThis action cannot be undone.`;
-    
+    // Reset purge result
+    setPurgeResult(null);
+
+    // Build confirmation message based on mode
+    let confirmMessage = dryRun
+      ? `[SIMULATION MODE]\n\nThis will SIMULATE a ${wipeType.toUpperCase()} operation on ${selectedDriveInfo.description}.\n\n⚠️ No real data will be erased.`
+      : `Are you sure you want to ${wipeType.toUpperCase()} ${selectedDriveInfo.description}?\n\nThis will PERMANENTLY delete all data on the device.\nThis action cannot be undone.`;
+
     if (!confirm(confirmMessage)) {
       return;
     }
@@ -209,10 +367,20 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
       setWipeStatus('running');
       setProgress(0);
       setWipeLogs([]);
-      
+
+      // Add simulation mode indicator to logs
+      if (dryRun) {
+        setWipeLogs([{
+          message: '🔬 SIMULATION MODE ACTIVE - No data will be erased',
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+      }
+
+      // Frontend sends user intent only - backend decides actual method
       const wipeParams = {
-        device: selectedDriveInfo.device, // Use the actual device path
-        method: wipeMethod,
+        devicePath: selectedDriveInfo.device, // Physical device path
+        wipeType: wipeType,  // "clear" | "purge" | "destroy"
+        dryRun: dryRun,      // Simulate without destructive action
         label: selectedDriveInfo.description,
         deviceInfo: {
           serial: selectedDriveInfo.serial || 'Unknown',
@@ -223,16 +391,49 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
       };
 
       console.log('Starting wipe with params:', wipeParams);
-      
+
       // @ts-ignore
-      const result = await window.api.startWipe(wipeParams);
-      
-      if (!result.success) {
-        throw new Error(result.error || 'Unknown error occurred');
+      const response = await window.api.startWipe(wipeParams);
+
+      // Check for IPC/Main process error
+      if (!response.success) {
+        // If result is present, it might contain specific failure details
+        if (response.result && response.result.message) {
+          throw new Error(response.result.message);
+        }
+        throw new Error(response.error || 'Unknown error occurred');
       }
-      
-      console.log('Wipe started successfully:', result);
-      
+
+      const result = response.result;
+      console.log('Operation result:', result);
+
+      // Determine final status based on backend response
+      if (result.status === 'success' || result.status === 'simulated') {
+        // We do NOT set 'completed' here for 'success' because standard wipes (clear/destroy)
+        // emit 'wipe-completed' event which listeners handle.
+        // However, if it was instant (like simulation sometimes), we might need to.
+        // BUT startWipe is async and progress events will fire.
+        // So we just log it. The existing listeners will update the UI.
+
+        // Exception: if the backend finished instantly (e.g. simulation), events might have fired already?
+        // Let's rely on the events mechanism which we verified in preload/main.
+        console.log('Wipe initiated successfully');
+      } else if (result.status === 'unsupported') {
+        // Immediate failure due to lack of support (e.g. Purge on USB)
+        // This stops the spinner immediately
+        setWipeStatus('error');
+        setProgress(100);
+        setCurrentStageText(result.message);
+
+        // Show helpful alert for unsupported actions
+        setTimeout(() => {
+          alert(`Operation Unsupported: ${result.message}\n\nSuggestion: ${result.fallbackSuggested?.reason || 'Try a different method like Clear.'}`);
+        }, 100);
+      } else {
+        // Failed status
+        throw new Error(result.message || 'Operation failed');
+      }
+
     } catch (error) {
       console.error('Failed to start wipe:', error);
       setWipeStatus('error');
@@ -273,13 +474,13 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
         type: driveInfo.busType,
         capacity: formatBytes(driveInfo.size)
       },
-      eraseMethod: wipeMethods.find((m) => m.id === wipeMethod)?.name || 'Unknown',
-      nistProfile: 'Purge',
+      eraseMethod: wipeTypes.find((t) => t.id === wipeType)?.name || 'Unknown',
+      nistProfile: wipeType.charAt(0).toUpperCase() + wipeType.slice(1), // Clear, Purge, or Destroy
       postWipeStatus: 'success',
       logs: wipeLogs.map(log => log.message),
       toolVersion: "2.1.0"
     };
-    
+
     try {
       // @ts-ignore
       const result = await window.api.generateCertificate(certificateData);
@@ -350,6 +551,13 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
           </Button>
         </div>
       </div>
+
+      {/* Admin Warning Banner - shows when not running as Administrator */}
+      <AdminWarningBanner
+        adminStatus={adminStatus}
+        loading={adminStatusLoading}
+        onRestartElevated={handleRestartElevated}
+      />
 
       {/* Configuration Panel */}
       <div className="grid gap-6 grid-cols-1 xl:grid-cols-3">
@@ -428,47 +636,65 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
             </CardContent>
           </Card>
 
-          {/* Wipe Method */}
+          {/* Wipe Type Selection */}
           <Card className="bg-card border-border">
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
                 <Settings className="h-5 w-5" />
-                Wipe Method
+                Sanitization Type
               </CardTitle>
-              <CardDescription>Select the security standard for data destruction</CardDescription>
+              <CardDescription>Select the NIST 800-88 sanitization level</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Select value={wipeMethod} onValueChange={setWipeMethod} disabled={wipeStatus === "running"}>
+              <Select value={wipeType} onValueChange={(v) => setWipeType(v as "clear" | "purge" | "destroy")} disabled={wipeStatus === "running"}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {wipeMethods.map((method) => (
-                    <SelectItem key={method.id} value={method.id}>
+                  {nistWipeTypes.map((type) => (
+                    <SelectItem key={type.id} value={type.id}>
                       <div className="flex flex-col items-start">
-                        <span className="font-medium">{method.name}</span>
-                        <span className="text-xs text-muted-foreground">{method.description}</span>
+                        <span className="font-medium">{type.name}</span>
+                        <span className="text-xs text-muted-foreground">{type.description}</span>
                       </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
 
-              {wipeMethod && (
+              {wipeType && (
                 <div className="p-4 rounded-lg border border-border bg-card/50">
                   <div className="flex items-start gap-3">
                     <Shield className="h-5 w-5 text-primary mt-0.5" />
                     <div>
                       <p className="font-medium text-card-foreground">
-                        {wipeMethods.find((m) => m.id === wipeMethod)?.name}
+                        {nistWipeTypes.find((t) => t.id === wipeType)?.name}
                       </p>
                       <p className="text-sm text-muted-foreground">
-                        {wipeMethods.find((m) => m.id === wipeMethod)?.description}
+                        {nistWipeTypes.find((t) => t.id === wipeType)?.description}
                       </p>
                     </div>
                   </div>
                 </div>
               )}
+
+              {/* Dry Run Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-card/50">
+                <div>
+                  <p className="font-medium text-card-foreground">Simulation Mode</p>
+                  <p className="text-xs text-muted-foreground">
+                    {dryRun ? "Safe mode - no data will be destroyed" : "⚠️ REAL MODE - Data will be permanently destroyed"}
+                  </p>
+                </div>
+                <Button
+                  variant={dryRun ? "outline" : "destructive"}
+                  size="sm"
+                  onClick={() => setDryRun(!dryRun)}
+                  disabled={wipeStatus === "running"}
+                >
+                  {dryRun ? "Dry Run ON" : "LIVE MODE"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
 
@@ -517,13 +743,23 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
 
               {/* Control Buttons */}
               <div className="flex flex-col sm:flex-row gap-3">
+                {/* Main wipe button - disabled when not elevated (unless in simulation mode) */}
                 <Button
                   onClick={handleStartWipe}
-                  disabled={!selectedDrive || wipeStatus === "running"}
+                  disabled={
+                    !selectedDrive ||
+                    wipeStatus === "running" ||
+                    (!dryRun && !!adminStatus && !adminStatus.isElevated)
+                  }
                   className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                  title={
+                    adminStatus && !adminStatus.isElevated && !dryRun
+                      ? "Administrator privileges required for wipe operations"
+                      : undefined
+                  }
                 >
                   <Play className="mr-2 h-4 w-4" />
-                  Start Wipe
+                  {dryRun ? "Start Simulation" : "Start Wipe"}
                 </Button>
 
                 {wipeStatus === "running" && (
@@ -533,6 +769,17 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
                   </Button>
                 )}
               </div>
+
+              {/* Admin warning for disabled button */}
+              {adminStatus && !adminStatus.isElevated && !dryRun && (
+                <div className="flex items-center gap-2 p-3 rounded-md bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 text-sm">
+                  <ShieldAlert className="h-4 w-4 flex-shrink-0" />
+                  <span>
+                    Wipe operations require Administrator privileges.
+                    {dryRun ? "" : " Enable Simulation Mode to test without admin rights, or restart as Administrator."}
+                  </span>
+                </div>
+              )}
 
               {/* Logs */}
               {wipeLogs.length > 0 && (
@@ -562,17 +809,24 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
                 <div className="flex justify-between items-start gap-2">
                   <span className="text-sm text-muted-foreground">Selected Drive</span>
                   <span className="text-sm font-medium text-card-foreground text-right">
-                    {selectedDrive ? 
+                    {selectedDrive ?
                       drives.find(d => d.mountpoints.some(mp => mp.path === selectedDrive))?.description || selectedDrive
                       : "None"}
                   </span>
                 </div>
 
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-sm text-muted-foreground">Wipe Method</span>
+                  <span className="text-sm text-muted-foreground">Sanitization Type</span>
                   <span className="text-sm font-medium text-card-foreground text-right">
-                    {wipeMethods.find((m) => m.id === wipeMethod)?.name.split(" ")[0] || "NIST"}
+                    {wipeTypes.find((t) => t.id === wipeType)?.name || "Clear"}
                   </span>
+                </div>
+
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-sm text-muted-foreground">Mode</span>
+                  <Badge variant={dryRun ? "secondary" : "destructive"}>
+                    {dryRun ? "Simulation" : "Live"}
+                  </Badge>
                 </div>
 
                 <div className="flex justify-between items-start gap-2">

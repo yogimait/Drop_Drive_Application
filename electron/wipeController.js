@@ -4,6 +4,7 @@ const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { Worker } = require('worker_threads');
 const { generateWipeCertificate } = require('./certificateGenerator');
 const purgeController = require('./purgeController');
 
@@ -25,6 +26,73 @@ try {
 }
 
 const wipeController = new EventEmitter();
+
+// Track active wipe tasks for cancellation
+const activeTasks = new Map();
+
+function cancelWipe(wipeId) {
+  if (activeTasks.has(wipeId)) {
+    console.log(`[WipeController] Cancelling wipe ${wipeId}`);
+    try { activeTasks.get(wipeId).cancel(); } catch (e) { console.error(e); }
+    activeTasks.delete(wipeId);
+    return true;
+  }
+  return false;
+}
+
+// Helper to run blocking operations in a worker thread
+function runWorkerTask(wipeId, operation, devicePath, wipeType, dryRun, onProgress) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'wipeWorker.js'), {
+      workerData: { operation, devicePath, wipeType, dryRun }
+    });
+
+    const cleanup = () => { clearInterval(progressInterval); if (wipeId) activeTasks.delete(wipeId); };
+    if (wipeId) {
+      activeTasks.set(wipeId, { cancel: () => { cleanup(); worker.terminate(); reject(new Error('Operation cancelled by user')); } });
+    }
+
+    // Send the task
+    worker.postMessage({ operation, devicePath, wipeType, dryRun });
+
+    // Fake progress/heartbeat timer
+    const heartbeatParams = { progress: 30, direction: 1 };
+    const progressInterval = setInterval(() => {
+      // Oscillate progress between 30 and 90 to show activity
+       // Slow increment logic
+       if (heartbeatParams.progress < 95) heartbeatParams.progress += (Math.random() < 0.3 ? 1 : 0);
+
+      onProgress?.({
+        progress: heartbeatParams.progress,
+        stage: `Executing ${operation.toUpperCase()} (Processing...)...`
+      });
+    }, 2000); // Update every 2s
+
+    worker.on('message', (msg) => {
+      if (msg.type === 'log') {
+        console.log(`[Worker] ${msg.message}`);
+      } else if (msg.type === 'done') {
+        clearInterval(progressInterval);
+        resolve(msg.result);
+      } else if (msg.type === 'error') {
+        clearInterval(progressInterval);
+        reject(new Error(msg.error));
+      }
+    });
+
+    worker.on('error', (err) => {
+      clearInterval(progressInterval);
+      reject(err);
+    });
+
+    worker.on('exit', (code) => {
+      clearInterval(progressInterval);
+      if (code !== 0) {
+        reject(new Error(`Worker stopped with exit code ${code}`));
+      }
+    });
+  });
+}
 
 // USB Drive Management Functions
 class USBManager {
@@ -129,147 +197,155 @@ online disk
   }
 }
 
-// Enhanced wipe function with proper USB management
-async function startWipe({ device, method, label, deviceInfo }, onProgress) {
-  console.log(`[WipeController] Starting wipe on ${device} with ${method}`);
+// Main wipe function - accepts user intent, routes to appropriate handler
+// Frontend sends: devicePath, wipeType ("clear"|"purge"|"destroy"), dryRun, label, deviceInfo
+// Backend decides: actual method to use, returns structured response
+async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInfo, wipeId }, onProgress) {
+  // Support legacy 'device' parameter for backward compatibility
+  const device = devicePath || arguments[0]?.device;
+  const type = wipeType || 'clear';
 
-  if (!device || !method) {
-    throw new Error('Missing required parameters: device or method');
+  console.log(`[WipeController] Starting ${type} on ${device} (dryRun: ${dryRun})`);
+
+  if (!device) {
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'none',
+      message: 'Missing required parameter: devicePath',
+      fallbackSuggested: null
+    };
   }
 
   const logs = [];
-  let wipeResult = 'Unknown';
-  let status = 'failure';
 
   try {
-    // Step 1: Check if drive is accessible
-    // const isAccessible = await USBManager.checkDriveAccessible(device);
-    // if (!isAccessible) {
-    //   throw new Error(`Drive ${device} is not accessible`);
-    // }
-
-    logs.push(`Wipe started at ${new Date().toLocaleTimeString()}`);
+    logs.push(`Operation started at ${new Date().toLocaleTimeString()}`);
+    logs.push(`Sanitization type: ${type.toUpperCase()}`);
+    logs.push(`Mode: ${dryRun ? 'SIMULATION (dry run)' : 'LIVE EXECUTION'}`);
     onProgress?.({ progress: 5, stage: 'Preparing drive...', logs: [...logs] });
 
-    // Step 2: Unmount the drive
-    logs.push('Unmounting drive...');
-    onProgress?.({ progress: 10, stage: 'Unmounting drive...', logs: [...logs] });
-
-    try {
-      await USBManager.unmountDrive(device);
-      logs.push('Drive unmounted successfully');
-    } catch (unmountError) {
-      console.warn('Unmount failed, continuing anyway:', unmountError.message);
-      logs.push(`Unmount warning: ${unmountError.message}`);
-    }
-
-    onProgress?.({ progress: 20, stage: 'Starting wipe operation...', logs: [...logs] });
-
-    // Step 3: Perform the actual wipe
-    if (wipeAddon && wipeAddon.wipeFile) {
-      // Use native C++ addon
-      logs.push(`Using native wipe method: ${method}`);
-      onProgress?.({ progress: 30, stage: `Executing ${method} wipe...`, logs: [...logs] });
+    // Unmount the drive (skip in dry run for safety)
+    if (!dryRun) {
+      logs.push('Unmounting drive...');
+      onProgress?.({ progress: 10, stage: 'Unmounting drive...', logs: [...logs] });
 
       try {
-        // For a fast, content-only wipe:
-        // wipeResult = wipeAddon.wipeVolumeContents(device, method);
-
-        // For a full wipe with automatic reallocation:
-        wipeResult = wipeAddon.wipeFile(device, method, true);
-
-        logs.push(`Native wipe result: ${wipeResult}`);
-
-        // Simulate progress for the wipe operation
-        const passes = getWipePassCount(method);
-        for (let pass = 1; pass <= passes; pass++) {
-          const progressPercent = 30 + ((pass / passes) * 50);
-          onProgress?.({
-            progress: Math.round(progressPercent),
-            stage: `Pass ${pass}/${passes} - ${method}`,
-            logs: [...logs]
-          });
-
-          // Simulate some processing time
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-
-        status = wipeResult.toLowerCase().includes('completed') ? 'success' : 'failure';
-      } catch (nativeError) {
-        console.error('Native wipe failed:', nativeError);
-        logs.push(`Native wipe error: ${nativeError.message}`);
-        throw nativeError;
+        await USBManager.unmountDrive(device);
+        logs.push('Drive unmounted successfully');
+      } catch (unmountError) {
+        console.warn('Unmount failed, continuing anyway:', unmountError.message);
+        logs.push(`Unmount warning: ${unmountError.message}`);
       }
     } else {
-      // Fallback: simulate wipe (for testing)
-      logs.push('Using simulated wipe (native addon not available)');
-      const passes = getWipePassCount(method);
+      logs.push('Skipping unmount (dry run mode)');
+    }
 
-      for (let pass = 1; pass <= passes; pass++) {
-        const progressPercent = 30 + ((pass / passes) * 50);
-        onProgress?.({
-          progress: Math.round(progressPercent),
-          stage: `Pass ${pass}/${passes} - ${method} (Simulated)`,
-          logs: [...logs]
-        });
+    onProgress?.({ progress: 20, stage: `Starting ${type} operation...`, logs: [...logs] });
 
-        await new Promise(resolve => setTimeout(resolve, 1500));
+    let result;
+
+    // Route to appropriate handler based on wipeType
+    switch (type) {
+      case 'clear':
+        result = await executeClear(device, wipeId, dryRun, logs, onProgress);
+        break;
+
+      case 'purge':
+        result = await executePurgeHandler(device, wipeId, dryRun, logs, onProgress);
+        break;
+
+      case 'destroy':
+        result = await executeDestroy(device, wipeId, dryRun, logs, onProgress);
+        break;
+
+      default:
+        result = {
+          status: 'failed',
+          executed: false,
+          methodUsed: 'none',
+          message: `Unknown wipe type: ${type}`,
+          fallbackSuggested: { methods: ['clear'], reason: 'Invalid wipe type specified' }
+        };
+    }
+
+    // Remount the drive (only if we unmounted and actually executed)
+    if (!dryRun && result.executed) {
+      onProgress?.({ progress: 85, stage: 'Remounting drive...', logs: [...logs] });
+      try {
+        await USBManager.remountDrive(device);
+        logs.push('Drive remounted successfully');
+      } catch (remountError) {
+        console.warn('Remount failed:', remountError.message);
+        logs.push(`Remount warning: ${remountError.message}`);
       }
-
-      wipeResult = `Simulated wipe completed with method: ${method}`;
-      status = 'success';
-      logs.push(wipeResult);
     }
 
-    onProgress?.({ progress: 85, stage: 'Remounting drive...', logs: [...logs] });
+    // Generate certificate if successful and not a dry run
+    let certificateResult = null;
+    if (result.status === 'success' && !dryRun) {
+      onProgress?.({ progress: 95, stage: 'Generating certificate...', logs: [...logs] });
 
-    // Step 4: Remount the drive
-    try {
-      await USBManager.remountDrive(device);
-      logs.push('Drive remounted successfully');
-    } catch (remountError) {
-      console.warn('Remount failed:', remountError.message);
-      logs.push(`Remount warning: ${remountError.message}`);
+      const deviceInfoForCert = deviceInfo || {
+        serial: device,
+        model: label || 'Unknown Device',
+        type: 'Unknown',
+        capacity: 'Unknown'
+      };
+
+      try {
+        certificateResult = await generateWipeCertificate({
+          device,
+          deviceInfo: deviceInfoForCert,
+          eraseMethod: result.methodUsed,
+          nistProfile: type.charAt(0).toUpperCase() + type.slice(1), // Clear, Purge, or Destroy
+          postWipeStatus: result.status,
+          logs: logs,
+          toolVersion: "2.1.0"
+        });
+      } catch (certError) {
+        logs.push(`Certificate generation failed: ${certError.message}`);
+      }
     }
 
-    logs.push(`Wipe completed at ${new Date().toLocaleTimeString()}`);
-    onProgress?.({ progress: 95, stage: 'Generating certificate...', logs: [...logs] });
+    logs.push(`Operation completed at ${new Date().toLocaleTimeString()}`);
+    onProgress?.({ progress: 100, stage: result.message, logs: [...logs] });
 
-    // Step 5: Generate certificate
-    const deviceInfoForCert = deviceInfo || {
-      serial: device,
-      model: label || 'Unknown Device',
-      type: 'USB',
-      capacity: 'Unknown'
-    };
-
-    const certificateResult = await generateWipeCertificate({
-      device,
-      deviceInfo: deviceInfoForCert,
-      eraseMethod: method,
-      nistProfile: mapMethodToNistProfile(method),
-      postWipeStatus: status,
-      logs: logs,
-      toolVersion: "2.1.0"
-    });
-
-    onProgress?.({ progress: 100, stage: 'Wipe completed successfully!', logs: [...logs] });
-
+    // Return structured response matching the spec
     return {
-      device,
-      method,
-      label,
-      status: status === 'success' ? 'Completed' : 'Error',
+      status: result.status,  // 'success' | 'unsupported' | 'simulated' | 'failed'
+      executed: result.executed,
+      methodUsed: result.methodUsed,
+      message: result.message,
+      fallbackSuggested: result.fallbackSuggested || null,
+      logs: logs,
       completedAt: new Date().toISOString(),
-      certificatePath: certificateResult.certPath,
-      pdfPath: certificateResult.pdfPath,
-      wipeResult,
-      logs
+      certificatePath: certificateResult?.certPath || null,
+      completedAt: new Date().toISOString()
     };
-
   } catch (error) {
     console.error('[WipeController] Error during wipe:', error);
-    logs.push(`Error: ${error.message}`);
+
+    // Check if this is a privilege/permission error
+    const errorMsg = error.message || '';
+    const isPrivilegeError =
+      errorMsg.includes('Access denied') ||
+      errorMsg.includes('ACCESS_DENIED') ||
+      errorMsg.includes('Error 5') ||
+      errorMsg.includes('EPERM') ||
+      errorMsg.includes('Operation not permitted') ||
+      errorMsg.includes('requires elevation');
+
+    if (isPrivilegeError) {
+      const humanReadableError =
+        'Administrator permissions required. ' +
+        'Please restart DropDrive as Administrator to perform disk wipe operations. ' +
+        'Go to the Wipe Process page and click "Restart as Administrator", or close the app ' +
+        'and right-click to "Run as administrator".';
+      logs.push(`Permission Error: ${humanReadableError}`);
+    } else {
+      logs.push(`Error: ${error.message}`);
+    }
 
     // Try to remount even if wipe failed
     try {
@@ -279,7 +355,176 @@ async function startWipe({ device, method, label, deviceInfo }, onProgress) {
       logs.push(`Failed to remount after error: ${remountError.message}`);
     }
 
-    throw new Error(`Wipe failed: ${error.message}`);
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'none',
+      message: isPrivilegeError
+        ? 'Administrator permissions required for disk wipe operations.'
+        : `Operation failed: ${error.message}`,
+      fallbackSuggested: null,
+      logs: logs,
+      completedAt: new Date().toISOString(),
+      isPrivilegeError: isPrivilegeError
+    };
+  }
+}
+
+// Handler for CLEAR (software overwrite)
+async function executeClear(device, wipeId, dryRun, logs, onProgress) {
+  logs.push('Executing CLEAR (software overwrite)...');
+
+  if (dryRun) {
+    logs.push('DRY RUN: Would perform software overwrite using wipeFile');
+    // Simulate progress
+    for (let i = 30; i <= 80; i += 10) {
+      onProgress?.({ progress: i, stage: 'Simulating clear operation...', logs: [...logs] });
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return {
+      status: 'simulated',
+      executed: false,
+      methodUsed: 'wipeFile',
+      message: 'Simulation complete - Clear operation would succeed'
+    };
+  }
+
+  if (!wipeAddon || !wipeAddon.wipeFile) {
+    logs.push('Native addon not available - cannot perform clear');
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'none',
+      message: 'Native wipe addon not available',
+      fallbackSuggested: { methods: ['destroy'], reason: 'Native addon not loaded' }
+    };
+  }
+
+  try {
+    onProgress?.({ progress: 30, stage: 'Starting clear worker...', logs: [...logs] });
+
+    // Use worker to avoid freezing main thread
+    const result = await runWorkerTask(wipeId, 'clear', device, 'clear', dryRun, onProgress);
+
+    logs.push(`Worker result: ${result.message}`);
+    const success = result.status === 'success';
+
+    return {
+      status: success ? 'success' : 'failed',
+      executed: true,
+      methodUsed: 'wipeFile',
+      message: result.message || (success ? 'Clear completed' : 'Clear failed')
+    };
+  } catch (error) {
+    logs.push(`Clear error: ${error.message}`);
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'wipeFile',
+      message: `Clear execution failed: ${error.message}`
+    };
+  }
+}
+
+// Handler for PURGE (hardware erase) - delegates to purgeController (Worker)
+async function executePurgeHandler(device, wipeId, dryRun, logs, onProgress) {
+  logs.push('Executing PURGE (hardware erase)...');
+  logs.push('Attempting: Crypto Erase → NVMe Sanitize → ATA Secure Erase');
+
+  onProgress?.({ progress: 30, stage: 'Attempting purge methods...', logs: [...logs] });
+
+  try {
+    const purgeResult = await runWorkerTask(wipeId, 'purge', device, 'purge', dryRun, onProgress);
+
+    // Merge purge logs
+    if (purgeResult.logs) {
+      // Simple merge
+      purgeResult.logs.forEach(l => { if (!logs.includes(l)) logs.push(l); });
+    }
+
+    if (purgeResult.purgeSucceeded) {
+      return {
+        status: dryRun ? 'simulated' : 'success',
+        executed: !dryRun,
+        methodUsed: purgeResult.successfulMethod,
+        message: dryRun
+          ? `Simulation complete - ${purgeResult.successfulMethod} would succeed`
+          : `Purge completed using ${purgeResult.successfulMethod}`
+      };
+    } else {
+      return {
+        status: 'unsupported',
+        executed: false,
+        methodUsed: 'none',
+        message: 'Purge methods not supported for this device',
+        fallbackSuggested: purgeResult.fallbackRecommendation
+      };
+    }
+  } catch (error) {
+    logs.push(`Purge error: ${error.message}`);
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'none',
+      message: `Purge execution failed: ${error.message}`,
+      fallbackSuggested: null
+    };
+  }
+}
+
+// Handler for DESTROY (multi-pass + partition destruction)
+async function executeDestroy(device, wipeId, dryRun, logs, onProgress) {
+  logs.push('Executing DESTROY (multi-pass overwrite + partition destruction)...');
+
+  if (dryRun) {
+    logs.push('DRY RUN: Would perform multi-pass overwrite with partition destruction');
+    for (let i = 30; i <= 80; i += 10) {
+      onProgress?.({ progress: i, stage: 'Simulating destroy operation...', logs: [...logs] });
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return {
+      status: 'simulated',
+      executed: false,
+      methodUsed: 'destroyDrive',
+      message: 'Simulation complete - Destroy operation would proceed'
+    };
+  }
+
+  // Real execution via Worker
+  if (!wipeAddon) {
+    logs.push('Native addon not available - cannot perform destroy');
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'none',
+      message: 'Native execution failed: Addon not loaded',
+      fallbackSuggested: null
+    };
+  }
+
+  try {
+    onProgress?.({ progress: 30, stage: 'Starting destroy worker...', logs: [...logs] });
+
+    // Use worker
+    const result = await runWorkerTask(wipeId, 'destroy', device, 'destroy', dryRun, onProgress);
+
+    logs.push(`Worker result: ${result.message}`);
+    const success = result.status === 'success';
+
+    return {
+      status: success ? 'success' : 'failed',
+      executed: true,
+      methodUsed: 'destroyDrive',
+      message: result.message || (success ? 'Destroy completed' : 'Destroy failed')
+    };
+  } catch (error) {
+    logs.push(`Destroy error: ${error.message}`);
+    return {
+      status: 'failed',
+      executed: false,
+      methodUsed: 'destroyDrive',
+      message: `Destroy execution failed: ${error.message}`
+    };
   }
 }
 
@@ -350,11 +595,11 @@ function testNativeAddon() {
 
 module.exports = {
   startWipe,
+  cancelWipe, // Exported cancellation
   wipeController,
   testNativeAddon,
   USBManager,
-  // Purge controller exports
-  executePurge: purgeController.executePurge,
+  ExecutePurge: purgeController.executePurge,
   checkPurgeCapabilities: purgeController.checkPurgeCapabilities,
   formatPurgeResult: purgeController.formatPurgeResult
 };

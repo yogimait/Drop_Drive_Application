@@ -102,16 +102,39 @@ async function executePurge(devicePath, options = {}) {
         try {
             result = method.execute();
         } catch (error) {
-            // Handle unexpected errors (shouldn't happen with new structured responses)
-            log(`ERROR: Unexpected exception in ${method.name}: ${error.message}`);
-            result = {
-                method: method.name,
-                supported: false,
-                executed: false,
-                success: false,
-                error: error.message,
-                dryRun
-            };
+            // Check if this is a privilege/permission error
+            const errorMsg = error.message || '';
+            const isPrivilegeError =
+                errorMsg.includes('Access denied') ||
+                errorMsg.includes('ACCESS_DENIED') ||
+                errorMsg.includes('Error 5') ||
+                errorMsg.includes('EPERM') ||
+                errorMsg.includes('Operation not permitted') ||
+                errorMsg.includes('requires elevation');
+
+            if (isPrivilegeError) {
+                log(`ERROR: Administrator privileges required for ${method.name}`);
+                result = {
+                    method: method.name,
+                    supported: true, // Method might be supported, just can't access it
+                    executed: false,
+                    success: false,
+                    error: 'Administrator permissions required. Restart DropDrive as Administrator.',
+                    dryRun,
+                    isPrivilegeError: true
+                };
+            } else {
+                // Handle other unexpected errors
+                log(`ERROR: Unexpected exception in ${method.name}: ${error.message}`);
+                result = {
+                    method: method.name,
+                    supported: false,
+                    executed: false,
+                    success: false,
+                    error: error.message,
+                    dryRun
+                };
+            }
         }
 
         // Ensure result is an object (backward compatibility)

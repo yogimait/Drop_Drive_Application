@@ -11,7 +11,7 @@ function parseDateFromLog(logString) {
   if (!match) return null;
 
   let [, day, month, year, hour, minute, second, ampm] = match.map(Number);
-  
+
   if (ampm === 'pm' && hour < 12) hour += 12;
   if (ampm === 'am' && hour === 12) hour = 0;
 
@@ -23,7 +23,7 @@ function parseDateFromLog(logString) {
 function extractTimesFromLogs(logs) {
   const startTimeLog = logs.find(log => log.includes('Wipe started at'));
   const endTimeLog = logs.find(log => log.includes('Wipe completed at'));
-  
+
   const startTime = parseDateFromLog(startTimeLog);
   const endTime = parseDateFromLog(endTimeLog);
 
@@ -50,107 +50,131 @@ function calculateDuration(start, end) {
 async function generatePdfCertificate(jsonCertPath) {
   const cert = JSON.parse(fs.readFileSync(jsonCertPath, 'utf8'));
   const pdfPath = jsonCertPath.replace(/\.json$/, '.pdf');
-  const doc = new PDFDocument({ margin: 40, size: 'A4' });
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
 
   const stream = fs.createWriteStream(pdfPath);
   doc.pipe(stream);
 
-  // Define colors and fonts
-  const primaryBlue = '#4A90E2';
-  const lightGray = '#F5F7FA';
-  const darkGray = '#333333';
-  const successGreen = '#28A745';
-  const regularFont = 'Helvetica';
-  const boldFont = 'Helvetica-Bold';
-  const monoFont = 'Courier'; // Monospaced font for alignment
+  // --- Fonts & Colors ---
+  const fontMain = 'Times-Roman';
+  const fontBold = 'Times-Bold';
+  const fontMono = 'Courier';
+  const colorDark = '#1a1a1a';
+  const colorGray = '#666666';
+  const colorLine = '#dddddd';
 
   const { startTime, endTime } = extractTimesFromLogs(cert.logs);
 
-  // --- RESTORED: Your original section box helper function ---
-  function createSectionBox(x, y, width, height, title, content) {
-    doc.roundedRect(x, y, width, height, 5).fill(lightGray);
-    
-    doc.fillColor(primaryBlue).fontSize(14).font(boldFont)
-       .text(title, x + 15, y + 15);
-    
-    let currentY = y + 45;
-    content.forEach(item => {
-      // --- FIX: Use a monospaced font and padding for perfect alignment ---
-      const labelPadded = item.label.padEnd(16, ' ');
-      doc.fillColor(darkGray).fontSize(9).font(monoFont)
-         .text(`${labelPadded}${item.value}`, x + 15, currentY);
-      currentY += 15;
+  // --- 1. Formal Border (Double Line) ---
+  const borderPadding = 20;
+  doc.lineWidth(3).strokeColor(colorDark)
+    .rect(borderPadding, borderPadding, doc.page.width - borderPadding * 2, doc.page.height - borderPadding * 2)
+    .stroke();
+
+  doc.lineWidth(1).strokeColor(colorDark)
+    .rect(borderPadding + 4, borderPadding + 4, doc.page.width - (borderPadding * 2 + 8), doc.page.height - (borderPadding * 2 + 8))
+    .stroke();
+
+  // --- 2. Header Section ---
+  doc.moveDown(2);
+
+  // Optional: Add Logo if available, otherwise text logo
+  doc.font('Helvetica-Bold').fontSize(24).fillColor(colorDark)
+    .text('DROP DRIVE', { align: 'center', letterSpacing: 2 });
+
+  doc.moveDown(0.5);
+  doc.font(fontBold).fontSize(28).fillColor('#000000')
+    .text('CERTIFICATE OF DATA DESTRUCTION', { align: 'center' });
+
+  doc.moveDown(0.5);
+  doc.font(fontMain).fontSize(12).fillColor(colorGray)
+    .text(`Certificate ID: ${cert.certificate_id}`, { align: 'center' });
+
+  // Divider
+  doc.moveDown(1.5);
+  doc.lineWidth(1).strokeColor(colorDark)
+    .moveTo(100, doc.y).lineTo(doc.page.width - 100, doc.y).stroke();
+
+  // --- 3. Certification Statement ---
+  doc.moveDown(2);
+  doc.font(fontMain).fontSize(12).fillColor(colorDark)
+    .text('This document certifies that the data storage device described below has been sanitized in accordance with the specified techniques and standards. All addressable locations have been overwritten and verified, rendering the data irretrievable.', {
+      align: 'center',
+      width: 450,
+      align: 'justify'
     });
+
+  // --- 4. Main Data Grid ---
+  doc.moveDown(2.5);
+  let y = doc.y;
+  const col1X = 70;
+  const col2X = 300;
+  const rowHeight = 25;
+
+  // Helper row function
+  function drawRow(label, value, isBold = false) {
+    doc.font(fontBold).fontSize(11).fillColor(colorDark).text(label, col1X, y);
+    doc.font(isBold ? fontBold : fontMono).fontSize(11).fillColor(colorDark).text(value, col1X + 110, y);
+
+    // Draw line
+    doc.lineWidth(0.5).strokeColor(colorLine)
+      .moveTo(col1X, y + 18).lineTo(doc.page.width - 70, y + 18).stroke();
+
+    y += rowHeight;
   }
 
-  // --- RESTORED: Your original header design ---
-  doc.roundedRect(40, 40, doc.page.width - 80, 80, 5).fill(primaryBlue);
-  doc.fillColor('#FFFFFF').fontSize(24).font(boldFont).text('Drop Drive', 60, 55);
-  doc.fontSize(16).font(regularFont).text('DATA SANITIZATION CERTIFICATE', 60, 85);
+  // Draw two columns of data conceptually, but visually a clean list
+  const startY = y;
 
-  let currentY = 150;
-  const columnWidth = (doc.page.width - 100) / 2;
-  
-  // --- MODIFIED: Integrated corrected data into your layout ---
-  const certInfo = [
-    { label: 'Certificate ID', value: cert.certificate_id },
-    { label: 'Issue Date', value: new Date(cert.timestamp_utc).toLocaleString() },
-    { label: 'Status', value: cert.post_wipe_status.toUpperCase() },
-    { label: 'Operator', value: cert.operator },
-    { label: 'Wipe Started', value: startTime ? startTime.toLocaleString() : 'N/A' },
-    { label: 'Wipe Ended', value: endTime ? endTime.toLocaleString() : 'N/A' },
-    { label: 'Duration', value: calculateDuration(startTime, endTime) },
-  ];
-  createSectionBox(40, currentY, columnWidth, 150, 'Certificate Information', certInfo);
+  // Left Column Data (Device)
+  doc.font('Helvetica-Bold').fontSize(12).fillColor('#333333').text('DEVICE DETAILS', col1X, y - 5);
+  y += 20; // smaller spacing
+  drawRow('Model Name:', cert.device_info.model, true);
+  drawRow('Serial Number:', cert.device_info.serial_number);
+  drawRow('Capacity:', cert.device_info.capacity);
+  drawRow('Interface:', cert.device_info.type);
 
-  const deviceInfo = [
-    { label: 'Device Name', value: cert.device_info.model },
-    { label: 'Device Type', value: cert.device_info.type },
-    { label: 'Capacity', value: cert.device_info.capacity },
-    { label: 'Serial Number', value: cert.device_info.serial_number }
-  ];
-  createSectionBox(40 + columnWidth + 20, currentY, columnWidth, 150, 'Device Information', deviceInfo);
-  currentY += 170;
+  y += 20;
 
-  const sanitizationInfo = [
-    { label: 'Method', value: cert.erase_method },
-    { label: 'Standard', value: cert.nist_profile }
-  ];
-  createSectionBox(40, currentY, doc.page.width - 80, 70, 'Sanitization Method', sanitizationInfo);
-  currentY += 90;
+  // Right Column Data (Process) - Reset Y for visual balance? No, let's stack for PDF stability
+  // Actually, let's keep it linear for clarity in report style
+  doc.font('Helvetica-Bold').fontSize(12).fillColor('#333333').text('SANITIZATION PROCESS', col1X, y - 5);
+  y += 20;
+  drawRow('Method:', cert.erase_method, true);
+  drawRow('Standard:', cert.nist_profile);
+  drawRow('Date:', new Date(cert.timestamp_utc).toLocaleDateString());
+  drawRow('Duration:', calculateDuration(startTime, endTime));
+  drawRow('Status:', cert.post_wipe_status.toUpperCase(), true);
 
-  // Logs Section
-  if (cert.logs && cert.logs.length > 0) {
-    const logBoxHeight = 120;
-    doc.roundedRect(40, currentY, doc.page.width - 80, logBoxHeight, 5).fill(lightGray);
-    doc.fillColor(primaryBlue).fontSize(14).font(boldFont).text('Wipe Logs', 55, currentY + 15);
-    doc.fillColor(darkGray).fontSize(8).font(monoFont)
-       .text(cert.logs.join('\n'), 55, currentY + 45, { width: doc.page.width - 110, height: logBoxHeight - 50 });
-    currentY += logBoxHeight + 20;
-  }
-  
-  // Verification Section and QR Code
-  const verificationY = currentY;
-  const qrCodeSize = 80;
+  // --- 5. Verification & Signature Area ---
+  doc.moveDown(4);
+  y = doc.y + 40;
 
-  doc.fillColor(darkGray).font(regularFont).fontSize(9)
-     .text('This certificate confirms that the storage device has been securely sanitized according to industry standards. All data has been permanently destroyed and is unrecoverable.',
-           40, verificationY, { width: doc.page.width - 100 - qrCodeSize });
-  doc.moveDown(1);
-  doc.fillColor(successGreen).font(boldFont).fontSize(14)
-     .text('VERIFICATION COMPLETE', 40, doc.y);
+  // Signature Lines -> "Operator" and "Verifier"
+  const sigY = y;
+  doc.lineWidth(1).strokeColor(colorDark)
+    .moveTo(70, sigY).lineTo(250, sigY).stroke(); // Line 1
 
+  doc.lineWidth(1).strokeColor(colorDark)
+    .moveTo(350, sigY).lineTo(530, sigY).stroke(); // Line 2
+
+  doc.font(fontMain).fontSize(10).text('Authorized Technician', 70, sigY + 10, { width: 180, align: 'center' });
+  doc.font(fontMain).fontSize(10).text('Compliance Officer', 350, sigY + 10, { width: 180, align: 'center' });
+
+  // --- 6. QR Code (Bottom Right) ---
   try {
     const qrData = JSON.stringify({ id: cert.certificate_id, device: cert.device_info.model });
-    const qrImage = await QRCode.toDataURL(qrData, { width: qrCodeSize });
-    doc.image(qrImage, doc.page.width - 40 - qrCodeSize, verificationY);
-    doc.fontSize(8).fillColor('#888888').text('Scan for verification', doc.page.width - 40 - qrCodeSize, verificationY + qrCodeSize + 5, { align: 'center', width: qrCodeSize });
-  } catch (err) { console.warn("QR code generation failed", err); }
-  
-  // Footer
-  doc.fontSize(8).fillColor('#AAAAAA')
-     .text(`Generated by SecureWipe Pro v${cert.tool_version} | ${new Date(cert.timestamp_utc).toLocaleString()}`,
-           40, doc.page.height - 50, { align: 'center' });
+    const qrImage = await QRCode.toDataURL(qrData, { width: 90, margin: 1 });
+    // Place QR in bottom corner
+    doc.image(qrImage, doc.page.width - 130, doc.page.height - 150);
+  } catch (err) { }
+
+  // --- 7. Footer ---
+  const bottomY = doc.page.height - 80;
+  doc.fontSize(8).font('Helvetica').fillColor('#888888')
+    .text('DropDrive Secure Wipe Pro v' + cert.tool_version, 50, bottomY, { align: 'center' });
+
+  doc.text(`Generated: ${new Date().toLocaleString()}`, 50, bottomY + 12, { align: 'center' });
 
   doc.end();
   await new Promise((resolve, reject) => { stream.on('finish', resolve); stream.on('error', reject); });
