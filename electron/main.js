@@ -460,10 +460,7 @@ function createWindow() {
 
   win.loadURL(startUrl);
 
-  // Optional: Open DevTools in development
-  if (isDev) {
-    win.webContents.openDevTools();
-  }
+  // DevTools can be opened manually with Ctrl+Shift+I if needed
 }
 
 // App event handlers
@@ -485,10 +482,6 @@ app.whenReady().then(() => {
   }
 
   createWindow();
-
-  // Test the native addon on startup
-  console.log('Testing native addon on startup...');
-  testNativeAddon();
 });
 
 app.on('window-all-closed', () => {
