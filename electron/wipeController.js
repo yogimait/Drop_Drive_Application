@@ -59,8 +59,8 @@ function runWorkerTask(wipeId, operation, devicePath, wipeType, dryRun, onProgre
     const heartbeatParams = { progress: 30, direction: 1 };
     const progressInterval = setInterval(() => {
       // Oscillate progress between 30 and 90 to show activity
-       // Slow increment logic
-       if (heartbeatParams.progress < 95) heartbeatParams.progress += (Math.random() < 0.3 ? 1 : 0);
+      // Slow increment logic
+      if (heartbeatParams.progress < 95) heartbeatParams.progress += (Math.random() < 0.3 ? 1 : 0);
 
       onProgress?.({
         progress: heartbeatParams.progress,
@@ -301,7 +301,8 @@ async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInf
           nistProfile: type.charAt(0).toUpperCase() + type.slice(1), // Clear, Purge, or Destroy
           postWipeStatus: result.status,
           logs: logs,
-          toolVersion: "2.1.0"
+          toolVersion: "2.1.0",
+          simulated: dryRun  // Track if this was a dry run
         });
       } catch (certError) {
         logs.push(`Certificate generation failed: ${certError.message}`);

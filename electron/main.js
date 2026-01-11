@@ -8,6 +8,7 @@ const { startWipe, cancelWipe, testNativeAddon, executePurge, checkPurgeCapabili
 const { generateWipeCertificate } = require('./certificateGenerator');
 const { checkElevation, getElevationStatus, restartWithElevation } = require('./adminUtils');
 const fs = require('fs');
+const { initializeDatabase, getAllCertificates, getCertificateById, closeDatabase } = require('./db/database');
 
 // Global admin state - checked once at startup
 let isAppElevated = false;
@@ -293,29 +294,46 @@ ipcMain.handle('generate-certificate', async (event, data) => {
   }
 });
 
-// Get all certificates (existing functionality)
+// Get all certificates from SQLite database
 ipcMain.handle('get-certificates', async () => {
-  const certFolder = path.join(__dirname, '../certificates');
+  try {
+    const dbCertificates = getAllCertificates();
 
-  if (!fs.existsSync(certFolder)) {
-    console.log("Certificate directory not found, creating it.");
-    fs.mkdirSync(certFolder, { recursive: true });
-    return [];
-  }
-
-  const files = fs.readdirSync(certFolder).filter(f => f.endsWith('.json'));
-
-  const certificates = files.map(file => {
-    try {
-      const content = fs.readFileSync(path.join(certFolder, file), 'utf-8');
-      return JSON.parse(content);
-    } catch (error) {
-      console.error(`Failed to parse certificate ${file}:`, error);
-      return null;
+    // Transform DB records to match the frontend expected format
+    return dbCertificates.map(cert => ({
+      certificate_id: cert.id,
+      timestamp_utc: cert.created_at,
+      device_info: {
+        model: cert.device_model || 'Unknown',
+        type: cert.device_type || 'Unknown',
+        capacity: cert.device_size || 'Unknown',
+        serial_number: cert.device_serial || 'Unknown'
+      },
+      erase_method: cert.erase_method || 'Unknown',
+      nist_profile: cert.wipe_type,
+      post_wipe_status: cert.status,
+      json_path: cert.json_path,
+      pdf_path: cert.pdf_path,
+      simulated: cert.simulated === 1
+    }));
+  } catch (error) {
+    console.error('[Main] Failed to get certificates from DB:', error);
+    // Fallback to file-based reading for backwards compatibility
+    const certFolder = path.join(__dirname, '../certificates');
+    if (!fs.existsSync(certFolder)) {
+      return [];
     }
-  }).filter(Boolean);
-
-  return certificates.sort((a, b) => new Date(b.timestamp_utc) - new Date(a.timestamp_utc));
+    const files = fs.readdirSync(certFolder).filter(f => f.endsWith('.json'));
+    const certificates = files.map(file => {
+      try {
+        const content = fs.readFileSync(path.join(certFolder, file), 'utf-8');
+        return JSON.parse(content);
+      } catch (err) {
+        return null;
+      }
+    }).filter(Boolean);
+    return certificates.sort((a, b) => new Date(b.timestamp_utc) - new Date(a.timestamp_utc));
+  }
 });
 
 // Download certificate PDF (existing functionality)
@@ -333,6 +351,39 @@ ipcMain.handle('download-certificate-pdf', async (event, certificateId) => {
     }
   } else {
     return { success: false, error: 'PDF file not found.' };
+  }
+});
+
+// Get single certificate by ID from database
+ipcMain.handle('get-certificate-by-id', async (event, certificateId) => {
+  try {
+    const cert = getCertificateById(certificateId);
+    if (!cert) {
+      return { success: false, error: 'Certificate not found' };
+    }
+
+    return {
+      success: true,
+      certificate: {
+        certificate_id: cert.id,
+        timestamp_utc: cert.created_at,
+        device_info: {
+          model: cert.device_model || 'Unknown',
+          type: cert.device_type || 'Unknown',
+          capacity: cert.device_size || 'Unknown',
+          serial_number: cert.device_serial || 'Unknown'
+        },
+        erase_method: cert.erase_method || 'Unknown',
+        nist_profile: cert.wipe_type,
+        post_wipe_status: cert.status,
+        json_path: cert.json_path,
+        pdf_path: cert.pdf_path,
+        simulated: cert.simulated === 1
+      }
+    };
+  } catch (error) {
+    console.error(`[Main] Failed to get certificate ${certificateId}:`, error);
+    return { success: false, error: error.message };
   }
 });
 
@@ -384,6 +435,14 @@ app.whenReady().then(() => {
     console.log('[Main] Some disk operations will require Administrator privileges.');
   }
 
+  // Initialize SQLite database
+  try {
+    initializeDatabase();
+    console.log('[Main] Database initialized successfully');
+  } catch (error) {
+    console.error('[Main] Failed to initialize database:', error);
+  }
+
   createWindow();
 
   // Test the native addon on startup
@@ -411,4 +470,7 @@ app.on('before-quit', () => {
   // Ensure all wipe operations are properly cleaned up
   console.log('App quitting, active wipes:', activeWipes.size);
   activeWipes.clear();
+
+  // Close database connection
+  closeDatabase();
 });

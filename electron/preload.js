@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('api', {
   generateCertificate: (data) => ipcRenderer.invoke('generate-certificate', data),
   getCertificates: () => ipcRenderer.invoke('get-certificates'),
   downloadCertificatePdf: (certificateId) => ipcRenderer.invoke('download-certificate-pdf', certificateId),
+  getCertificateById: (certificateId) => ipcRenderer.invoke('get-certificate-by-id', certificateId),
 
   // Native Addon Testing
   testAddon: () => ipcRenderer.invoke('test-addon'),

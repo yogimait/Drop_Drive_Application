@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
-const { generatePdfCertificate } = require('./pdfCertificateGenerator'); // import your PDF gen
+const { generatePdfCertificate } = require('./pdfCertificateGenerator');
+const { insertCertificate, isDatabaseReady } = require('./db/database');
 
 
 async function generateWipeCertificate({
@@ -12,11 +13,16 @@ async function generateWipeCertificate({
   nistProfile,   // e.g. 'Clear', 'Purge', 'Destroy'
   postWipeStatus,// 'success' or 'failure'
   logs = [],
-  toolVersion = "1.0.0"
+  toolVersion = "1.0.0",
+  simulated = false  // Whether this was a dry run
 }) {
+  // Generate UUID once - used for JSON, PDF, and DB primary key
+  const certificateId = uuidv4();
+  const timestampUtc = new Date().toISOString();
+
   const certificate = {
-    certificate_id: uuidv4(),
-    timestamp_utc: new Date().toISOString(),
+    certificate_id: certificateId,
+    timestamp_utc: timestampUtc,
     operator: os.userInfo().username || "Operator",
     device_info: {
       serial_number: deviceInfo?.serial || "unknown",
@@ -35,15 +41,46 @@ async function generateWipeCertificate({
   const certFolder = path.resolve(__dirname, '../certificates');
   if (!fs.existsSync(certFolder)) fs.mkdirSync(certFolder, { recursive: true });
 
-  const certFilename = `certificate_${certificate.certificate_id}.json`;
+  // Use the same UUID for filename consistency
+  const certFilename = `certificate_${certificateId}.json`;
   const certPath = path.join(certFolder, certFilename);
 
+  // Write JSON certificate (absolute path)
   fs.writeFileSync(certPath, JSON.stringify(certificate, null, 2), 'utf8');
 
+  // Generate PDF certificate (returns absolute path)
   const pdfPath = await generatePdfCertificate(certPath);
 
-  // Return both file paths if you want
-  return { certPath, pdfPath };
+  // Insert into SQLite database
+  // This is SYNCHRONOUS - caller should have try/catch in main wipe flow
+  if (isDatabaseReady()) {
+    try {
+      insertCertificate({
+        id: certificateId,  // Same UUID as JSON/PDF filename
+        created_at: timestampUtc,  // ISO string
+        wipe_type: nistProfile,  // Clear/Purge/Destroy
+        status: postWipeStatus,  // success/simulated/unsupported/failed
+        device_model: deviceInfo?.model || null,
+        device_size: deviceInfo?.capacity || null,
+        device_type: deviceInfo?.type || null,
+        device_serial: deviceInfo?.serial || null,
+        erase_method: eraseMethod,
+        json_path: certPath,  // Absolute path
+        pdf_path: pdfPath,    // Absolute path
+        simulated: simulated,
+        user_id: null  // Future use for cloud sync
+      });
+      console.log(`[CertGen] Certificate ${certificateId} saved to database`);
+    } catch (dbError) {
+      // Log error but never break the wipe result
+      console.error(`[CertGen] Failed to save certificate to DB (non-fatal):`, dbError);
+    }
+  } else {
+    console.warn('[CertGen] Database not ready, skipping DB insert');
+  }
+
+  // Return both file paths (absolute)
+  return { certPath, pdfPath, certificateId };
 }
 
 
