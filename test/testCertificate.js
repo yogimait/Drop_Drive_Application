@@ -1,4 +1,4 @@
-import { generateWipeCertificate } from './certificateGenerator.js';
+import { generateWipeCertificate } from '../electron/certificateGenerator.js';
 
 
 
