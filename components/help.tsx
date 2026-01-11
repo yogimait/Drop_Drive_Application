@@ -12,15 +12,15 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
-  MessageCircle,
-  Mail,
-  Phone,
-  FileText,
+  Info,
   Shield,
-  ExternalLink,
   Book,
-  Video,
-  Download,
+  FileText,
+  AlertTriangle,
+  WifiOff,
+  Database,
+  ShieldAlert,
+  ServerOff,
 } from "lucide-react"
 
 interface FAQItem {
@@ -34,9 +34,9 @@ interface FAQItem {
 const faqData: FAQItem[] = [
   {
     id: "1",
-    question: "What wipe methods are supported by SecureWipe Pro?",
+    question: "What wipe methods are supported by DropDrive?",
     answer:
-      "SecureWipe Pro supports multiple industry-standard wipe methods including DoD 5220.22-M (3-pass), NIST 800-88 (1-pass for SSDs), Gutmann method (35-pass), Random Data (1-pass), and Zero Fill (1-pass). Each method is designed for different security requirements and drive types.",
+      "DropDrive supports multiple industry-standard wipe methods including DoD 5220.22-M (3-pass), NIST 800-88 (1-pass for SSDs), Gutmann method (35-pass), Random Data (1-pass), and Zero Fill (1-pass). Each method is designed for different security requirements and drive types.",
     category: "Wipe Methods",
     tags: ["wipe", "security", "methods"],
   },
@@ -44,23 +44,23 @@ const faqData: FAQItem[] = [
     id: "2",
     question: "How do I verify that a wipe was successful?",
     answer:
-      "After each wipe operation, SecureWipe Pro generates a detailed certificate that includes verification data. You can also enable auto-verification in Settings, which performs a read-back check to ensure data has been properly overwritten. All certificates are digitally signed and include timestamps.",
+      "After each wipe operation, DropDrive generates a detailed certificate that includes verification data. You can also enable auto-verification in Settings, which performs a read-back check to ensure data has been properly overwritten. All certificates are generated locally on your machine.",
     category: "Verification",
     tags: ["verification", "certificate", "security"],
   },
   {
     id: "3",
-    question: "Can I wipe system drives or drives with the operating system?",
+    question: "What are the limitations of DropDrive?",
     answer:
-      "For security reasons, SecureWipe Pro prevents wiping of system drives that contain the active operating system. You can wipe system drives by booting from a SecureWipe Pro bootable USB or by removing the drive and connecting it to another system.",
-    category: "System Drives",
-    tags: ["system", "os", "bootable"],
+      "DropDrive does NOT provide cloud backups, remote device management, or live customer support. All wipe operations and certificates are generated locally on your system. It is a strictly offline tool designed for local data destruction.",
+    category: "Limitations",
+    tags: ["offline", "cloud", "support"],
   },
   {
     id: "4",
     question: "What file formats are supported for certificates?",
     answer:
-      "SecureWipe Pro generates certificates in PDF format by default. You can also enable JSON report generation in Settings for machine-readable certificates. Both formats include the same verification data, timestamps, and digital signatures.",
+      "DropDrive generates certificates in PDF format by default. You can also enable JSON report generation in Settings for machine-readable certificates. Both formats are stored locally on your device.",
     category: "Certificates",
     tags: ["certificate", "pdf", "json"],
   },
@@ -74,9 +74,9 @@ const faqData: FAQItem[] = [
   },
   {
     id: "6",
-    question: "Is SecureWipe Pro compliant with industry standards?",
+    question: "Is DropDrive compliant with industry standards?",
     answer:
-      "Yes, SecureWipe Pro is compliant with major industry standards including DoD 5220.22-M, NIST 800-88, and Common Criteria. Our certificates are accepted by government agencies, financial institutions, and healthcare organizations for compliance audits.",
+      "Yes, DropDrive is compliant with major industry standards including DoD 5220.22-M, NIST 800-88, and Common Criteria. Our certificates are widely accepted for compliance audits.",
     category: "Compliance",
     tags: ["compliance", "standards", "certification"],
   },
@@ -92,7 +92,7 @@ const faqData: FAQItem[] = [
     id: "8",
     question: "What should I do if a wipe operation fails?",
     answer:
-      "If a wipe fails, check the drive health first. SecureWipe Pro will automatically retry based on your settings (default: 3 attempts). If the drive has bad sectors or hardware issues, consider professional data destruction services. All failed attempts are logged for troubleshooting.",
+      "If a wipe fails, check the drive health first. DropDrive will automatically retry based on your settings (default: 3 attempts). If the drive has bad sectors or hardware issues, consider physical destruction. All failed attempts are logged locally.",
     category: "Troubleshooting",
     tags: ["error", "failure", "troubleshooting"],
   },
@@ -103,11 +103,11 @@ const categories = [
   "Wipe Methods",
   "Verification",
   "Certificates",
+  "limitations",
   "Performance",
   "Compliance",
   "Operations",
   "Troubleshooting",
-  "System Drives",
 ]
 
 export function Help() {
@@ -129,22 +129,30 @@ export function Help() {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6 max-w-[1600px] mx-auto">
       {/* Header */}
-      <div className="space-y-2">
-        <h1 className="text-3xl font-bold text-foreground">Help & Support</h1>
-        <p className="text-muted-foreground">Find answers to common questions and get support for SecureWipe Pro</p>
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-foreground">Help & Support</h1>
+            <Badge variant="outline" className="text-xs bg-background/50 backdrop-blur border-primary/20 text-primary">
+              <WifiOff className="w-3 h-3 mr-1" />
+              Offline Mode
+            </Badge>
+          </div>
+          <p className="text-muted-foreground">Documentation and support resources for DropDrive v2.1.0</p>
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-4">
         {/* Main Content */}
         <div className="lg:col-span-3 space-y-6">
           {/* Search and Filter */}
-          <Card className="bg-card border-border">
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
-                <Search className="h-5 w-5" />
-                Search Help Topics
+                <Search className="h-5 w-5 text-primary" />
+                Search Documentation
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -154,7 +162,7 @@ export function Help() {
                   placeholder="Search for help topics, features, or error messages..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10"
+                  className="pl-10 bg-background/50 border-border/50 focus:border-primary/50 transition-colors"
                 />
               </div>
 
@@ -168,7 +176,7 @@ export function Help() {
                     className={
                       selectedCategory === category
                         ? "bg-primary text-primary-foreground"
-                        : "bg-transparent hover:bg-accent"
+                        : "bg-transparent border-border/50 hover:bg-accent hover:text-accent-foreground"
                     }
                   >
                     {category}
@@ -178,11 +186,73 @@ export function Help() {
             </CardContent>
           </Card>
 
-          {/* FAQ Section */}
-          <Card className="bg-card border-border">
+          {/* Quick Start Guide */}
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
-                <HelpCircle className="h-5 w-5" />
+                <Book className="h-5 w-5 text-primary" />
+                Quick Start Guide
+              </CardTitle>
+              <CardDescription>Essential steps to get started with DropDrive</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="p-4 rounded-lg border border-border/50 bg-background/30 hover:bg-background/50 transition-colors">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-medium border border-primary/20">
+                      1
+                    </div>
+                    <h3 className="font-medium text-card-foreground">Connect Your Drive</h3>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Connect the storage device you want to securely wipe to your computer
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-lg border border-border/50 bg-background/30 hover:bg-background/50 transition-colors">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-medium border border-primary/20">
+                      2
+                    </div>
+                    <h3 className="font-medium text-card-foreground">Select Wipe Method</h3>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Choose the appropriate security standard for your requirements
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-lg border border-border/50 bg-background/30 hover:bg-background/50 transition-colors">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-medium border border-primary/20">
+                      3
+                    </div>
+                    <h3 className="font-medium text-card-foreground">Start Wipe Process</h3>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Begin the secure wipe operation and monitor progress in real-time
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-lg border border-border/50 bg-background/30 hover:bg-background/50 transition-colors">
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-sm font-medium border border-primary/20">
+                      4
+                    </div>
+                    <h3 className="font-medium text-card-foreground">Get Certificate</h3>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Download your compliance certificate once the wipe is complete
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* FAQ Section */}
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
+                <HelpCircle className="h-5 w-5 text-primary" />
                 Frequently Asked Questions
               </CardTitle>
               <CardDescription>
@@ -193,16 +263,16 @@ export function Help() {
             <CardContent className="space-y-4">
               {filteredFAQs.map((faq) => (
                 <Collapsible key={faq.id} open={openItems.includes(faq.id)} onOpenChange={() => toggleItem(faq.id)}>
-                  <CollapsibleTrigger className="flex w-full items-center justify-between p-4 rounded-lg border border-border hover:bg-accent/50 transition-colors">
+                  <CollapsibleTrigger className="flex w-full items-center justify-between p-4 rounded-lg border border-border/50 hover:bg-accent/50 hover:border-accent transition-all group">
                     <div className="flex items-start gap-3 text-left">
                       <div className="flex-1">
-                        <h3 className="font-medium text-card-foreground">{faq.question}</h3>
+                        <h3 className="font-medium text-card-foreground group-hover:text-primary transition-colors">{faq.question}</h3>
                         <div className="flex items-center gap-2 mt-2">
-                          <Badge variant="outline" className="text-xs">
+                          <Badge variant="outline" className="text-xs border-border/50 text-muted-foreground">
                             {faq.category}
                           </Badge>
                           {faq.tags.slice(0, 2).map((tag) => (
-                            <Badge key={tag} variant="secondary" className="text-xs bg-muted text-muted-foreground">
+                            <Badge key={tag} variant="secondary" className="text-xs bg-muted/50 text-muted-foreground">
                               {tag}
                             </Badge>
                           ))}
@@ -216,8 +286,8 @@ export function Help() {
                     )}
                   </CollapsibleTrigger>
                   <CollapsibleContent className="px-4 pb-4">
-                    <div className="pt-3 border-t border-border">
-                      <p className="text-sm text-card-foreground leading-relaxed">{faq.answer}</p>
+                    <div className="pt-3 ml-1 border-l-2 border-border/50 pl-4 mt-2">
+                      <p className="text-sm text-muted-foreground leading-relaxed">{faq.answer}</p>
                     </div>
                   </CollapsibleContent>
                 </Collapsible>
@@ -225,7 +295,7 @@ export function Help() {
 
               {filteredFAQs.length === 0 && (
                 <div className="text-center py-8">
-                  <HelpCircle className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <HelpCircle className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
                   <p className="text-lg font-medium text-card-foreground">No results found</p>
                   <p className="text-muted-foreground">
                     Try adjusting your search terms or browse different categories
@@ -235,170 +305,121 @@ export function Help() {
             </CardContent>
           </Card>
 
-          {/* Quick Start Guide */}
-          <Card className="bg-card border-border">
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
-                <Book className="h-5 w-5" />
-                Quick Start Guide
-              </CardTitle>
-              <CardDescription>Essential steps to get started with SecureWipe Pro</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="p-4 rounded-lg border border-border bg-card/50">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
-                      1
-                    </div>
-                    <h3 className="font-medium text-card-foreground">Connect Your Drive</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Connect the storage device you want to securely wipe to your computer
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-lg border border-border bg-card/50">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
-                      2
-                    </div>
-                    <h3 className="font-medium text-card-foreground">Select Wipe Method</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Choose the appropriate security standard for your requirements
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-lg border border-border bg-card/50">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
-                      3
-                    </div>
-                    <h3 className="font-medium text-card-foreground">Start Wipe Process</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Begin the secure wipe operation and monitor progress in real-time
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-lg border border-border bg-card/50">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm font-medium">
-                      4
-                    </div>
-                    <h3 className="font-medium text-card-foreground">Get Certificate</h3>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    Download your compliance certificate once the wipe is complete
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Disclaimer */}
+          <div className="flex items-start gap-3 p-4 rounded-lg border border-red-500/20 bg-red-500/5">
+            <AlertTriangle className="h-5 w-5 text-red-500 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-red-500">Important Disclaimer</p>
+              <p className="text-xs text-muted-foreground">
+                DropDrive performs destructive disk operations. Always verify the selected drive before starting a wipe.
+                The developers are not responsible for accidental data loss. This software is provided "as is" without any warranty.
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Sidebar */}
         <div className="space-y-6">
-          {/* Contact Support */}
-          <Card className="bg-card border-border">
+
+          {/* How DropDrive Works */}
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm overflow-hidden">
+            <div className="h-1 w-full bg-gradient-to-r from-primary to-purple-500" />
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
-                <MessageCircle className="h-5 w-5" />
-                Contact Support
+                <Info className="h-5 w-5 text-primary" />
+                How DropDrive Works
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90">
-                <MessageCircle className="mr-2 h-4 w-4" />
-                Live Chat Support
-              </Button>
+              <ul className="space-y-3">
+                <li className="flex items-start gap-3 text-sm text-muted-foreground">
+                  <WifiOff className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                  <span>Runs fully offline with no external connections</span>
+                </li>
+                <li className="flex items-start gap-3 text-sm text-muted-foreground">
+                  <ShieldAlert className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                  <span>Performs permanent, destructive disk operations</span>
+                </li>
+                <li className="flex items-start gap-3 text-sm text-muted-foreground">
+                  <Shield className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                  <span>Generates digitally signed certificates locally</span>
+                </li>
+                <li className="flex items-start gap-3 text-sm text-muted-foreground">
+                  <Database className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+                  <span>Requires administrator privileges for disk access</span>
+                </li>
+              </ul>
+            </CardContent>
+          </Card>
 
-              <div className="space-y-3">
-                <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium text-card-foreground">Email Support</p>
-                    <p className="text-xs text-muted-foreground">support@securewipe.com</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 p-3 rounded-lg border border-border">
-                  <Phone className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium text-card-foreground">Phone Support</p>
-                    <p className="text-xs text-muted-foreground">1-800-SECURE-1</p>
-                  </div>
-                </div>
-              </div>
-
-              <Separator />
-
-              <div className="text-center">
-                <p className="text-xs text-muted-foreground">Business Hours</p>
-                <p className="text-sm font-medium text-card-foreground">Mon-Fri 9AM-6PM EST</p>
+          {/* Support Information */}
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold text-card-foreground flex items-center gap-2">
+                <ServerOff className="h-5 w-5 text-primary" />
+                Support Information
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="p-4 rounded-lg bg-accent/20 border border-accent/50">
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  DropDrive is distributed as a local desktop application. All wipe operations and certificates are generated locally.
+                  Support is provided through documentation and project resources.
+                </p>
               </div>
             </CardContent>
           </Card>
 
           {/* Resources */}
-          <Card className="bg-card border-border">
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground">Resources</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Button variant="outline" className="w-full justify-start bg-transparent">
-                <FileText className="mr-2 h-4 w-4" />
-                User Manual
-                <ExternalLink className="ml-auto h-3 w-3" />
+              <Button variant="outline" className="w-full justify-start bg-transparent border-border/50 hover:bg-accent hover:text-accent-foreground h-auto py-3">
+                <FileText className="mr-2 h-4 w-4 text-primary" />
+                <div className="flex flex-col items-start">
+                  <span className="text-sm font-medium">User Manual</span>
+                  <span className="text-xs text-muted-foreground">Local Documentation</span>
+                </div>
               </Button>
 
-              <Button variant="outline" className="w-full justify-start bg-transparent">
-                <Video className="mr-2 h-4 w-4" />
-                Video Tutorials
-                <ExternalLink className="ml-auto h-3 w-3" />
-              </Button>
-
-              <Button variant="outline" className="w-full justify-start bg-transparent">
-                <Shield className="mr-2 h-4 w-4" />
-                Security Standards
-                <ExternalLink className="ml-auto h-3 w-3" />
-              </Button>
-
-              <Button variant="outline" className="w-full justify-start bg-transparent">
-                <Download className="mr-2 h-4 w-4" />
-                Download Center
-                <ExternalLink className="ml-auto h-3 w-3" />
+              <Button variant="outline" className="w-full justify-start bg-transparent border-border/50 hover:bg-accent hover:text-accent-foreground h-auto py-3">
+                <Shield className="mr-2 h-4 w-4 text-primary" />
+                <div className="flex flex-col items-start">
+                  <span className="text-sm font-medium">Security Standards</span>
+                  <span className="text-xs text-muted-foreground">NIST 800-88 Overview</span>
+                </div>
               </Button>
             </CardContent>
           </Card>
 
           {/* System Info */}
-          <Card className="bg-card border-border">
+          <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
             <CardHeader>
               <CardTitle className="text-lg font-semibold text-card-foreground">System Information</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Version</span>
-                <span className="text-sm font-medium text-card-foreground">v2.1.0</span>
+            <CardContent className="space-y-4">
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">App Version</span>
+                <Badge variant="secondary" className="font-mono text-xs">v2.1.0</Badge>
               </div>
 
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">License</span>
-                <Badge className="bg-secondary text-secondary-foreground">Professional</Badge>
+              <Separator className="bg-border/50" />
+
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Admin Privileges</span>
+                <Badge variant="outline" className="text-xs border-green-500/30 text-green-500 bg-green-500/10">Yes</Badge>
               </div>
 
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Support Until</span>
-                <span className="text-sm font-medium text-card-foreground">Dec 2024</span>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-muted-foreground">Database Status</span>
+                <div className="flex items-center gap-1.5">
+                  <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+                  <span className="text-sm font-medium text-card-foreground">Connected</span>
+                </div>
               </div>
 
-              <Separator />
-
-              <Button variant="outline" size="sm" className="w-full bg-transparent">
-                Generate Support Report
-              </Button>
             </CardContent>
           </Card>
         </div>
@@ -406,3 +427,4 @@ export function Help() {
     </div>
   )
 }
+

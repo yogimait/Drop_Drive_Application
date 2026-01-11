@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('api', {
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
   getVolumes: () => ipcRenderer.invoke('get-volumes'),
   getDrives: () => ipcRenderer.invoke('list-drives'),
+  getDbStatus: () => ipcRenderer.invoke('get-db-status'),
+  openPath: (path) => ipcRenderer.invoke('open-path', path),
 
   // Admin Status
   getAdminStatus: () => ipcRenderer.invoke('get-admin-status'),

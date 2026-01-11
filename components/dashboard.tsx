@@ -36,26 +36,26 @@ export const VolumesGrid: React.FC = () => {
   return (
     <div className="grid md:grid-cols-3 gap-4">
       {volumes.map((vol, idx) => (
-      <div
-        key={idx}
-        className="bg-black p-4 rounded-lg flex flex-col gap-2 border-1"
-        style={{ borderColor: "#464747ff" }} // Tailwind green-500
-      >
-        <div className="flex items-center justify-between">
-        <div className="font-medium">{vol.label || 'Drive ' + vol.mount}</div>
-        <span className="px-2 py-1 rounded text-xs bg-muted">{vol.type}</span>
-        </div>
-        <div className="font-bold text-lg">{vol.fs}</div>
-        <div className="text-xs text-muted-foreground">
-        Used: {formatBytes(vol.used)} / {formatBytes(vol.size)}
-        </div>
-        <div className="w-full bg-muted rounded h-2 overflow-hidden">
         <div
-          className="bg-primary h-2"
-          style={{ width: `${Math.round((vol.used / vol.size) * 100)}%` }}
-        />
+          key={idx}
+          className="bg-black p-4 rounded-lg flex flex-col gap-2 border-1"
+          style={{ borderColor: "#464747ff" }} // Tailwind green-500
+        >
+          <div className="flex items-center justify-between">
+            <div className="font-medium">{vol.label || 'Drive ' + vol.mount}</div>
+            <span className="px-2 py-1 rounded text-xs bg-muted">{vol.type}</span>
+          </div>
+          <div className="font-bold text-lg">{vol.fs}</div>
+          <div className="text-xs text-muted-foreground">
+            Used: {formatBytes(vol.used)} / {formatBytes(vol.size)}
+          </div>
+          <div className="w-full bg-muted rounded h-2 overflow-hidden">
+            <div
+              className="bg-primary h-2"
+              style={{ width: `${Math.round((vol.used / vol.size) * 100)}%` }}
+            />
+          </div>
         </div>
-      </div>
       ))}
     </div>
   );
@@ -64,7 +64,7 @@ export const VolumesGrid: React.FC = () => {
 
 
 export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void }) {
-  // Example system info state
+  // System info state
   type SystemInfo = {
     cpu: string;
     memory: string;
@@ -72,13 +72,36 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
     storage: { type: string; size: number; name: string }[];
   };
 
+  type Certificate = {
+    certificate_id: string;
+    timestamp_utc: string;
+    device_info: {
+      model: string;
+      type: string;
+      capacity: string;
+    };
+    erase_method: string;
+    post_wipe_status: string;
+  };
+
   const [sysInfo, setSysInfo] = useState<SystemInfo | null>(null);
-  
+  const [certificates, setCertificates] = useState<Certificate[]>([]);
+  const [adminStatus, setAdminStatus] = useState<boolean>(false);
+  const [dbStatus, setDbStatus] = useState<boolean>(false);
 
   useEffect(() => {
     // @ts-ignore
     window.api.getSystemInfo().then(setSysInfo);
+    // @ts-ignore
+    window.api.getCertificates().then(setCertificates);
+    // @ts-ignore
+    window.api.getAdminStatus().then(setAdminStatus);
+    // @ts-ignore
+    window.api.getDbStatus().then(setDbStatus);
   }, []);
+
+  const recentActivity = certificates.slice(0, 3);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -89,15 +112,26 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
         </p>
       </div>
 
-      {/* Quick Actions */}
+      {/* Application Overview */}
+      <Card className="bg-card border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium text-card-foreground">What DropDrive Does</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            DropDrive securely erases storage devices using industry-recognized data sanitization methods and generates local verification certificates. All operations are performed offline.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Quick Actions & Status */}
       <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
         <Card className="bg-card border-border">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-card-foreground">Quick Start</CardTitle>
+            <CardTitle className="text-sm font-medium text-card-foreground">Quick Action</CardTitle>
           </CardHeader>
           <CardContent>
-            {/* Add onClick event to the button */}
-            <Button 
+            <Button
               className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
               onClick={onNavigateToWipe}
             >
@@ -107,16 +141,30 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
           </CardContent>
         </Card>
 
+        {/* System Readiness - Replaces Status */}
         <Card className="bg-card border-border">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-card-foreground">Last Wipe</CardTitle>
+            <CardTitle className="text-sm font-medium text-card-foreground">System Readiness</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="h-4 w-4 text-secondary" />
-              <span className="text-sm text-card-foreground">2 hours ago</span>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Admin Privileges:</span>
+                <span className={adminStatus ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>
+                  {adminStatus ? "Yes" : "No"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Database:</span>
+                <span className={dbStatus ? "text-green-500 font-medium" : "text-red-500 font-medium"}>
+                  {dbStatus ? "Connected" : "Disconnected"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Offline Mode:</span>
+                <span className="text-green-500 font-medium">Enabled</span>
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">SSD Drive - 512GB</p>
           </CardContent>
         </Card>
 
@@ -127,28 +175,28 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
           <CardContent>
             <div className="flex items-center gap-2">
               <Badge variant="secondary" className="bg-secondary text-secondary-foreground">
-                24 Total
+                {certificates.length} Total
               </Badge>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">This month</p>
+            <p className="text-xs text-muted-foreground mt-1">Locally stored</p>
           </CardContent>
         </Card>
 
         <Card className="bg-card border-border">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium text-card-foreground">Status</CardTitle>
+            <CardTitle className="text-sm font-medium text-card-foreground">Application Status</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-secondary"></div>
-              <span className="text-sm text-card-foreground">Ready</span>
+              <div className="h-2 w-2 rounded-full bg-green-500"></div>
+              <span className="text-sm text-card-foreground">Application Ready</span>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">All systems operational</p>
+            <p className="text-xs text-muted-foreground mt-1">DropDrive is ready for wipe operations.</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* System Information */}
+      {/* System Information & Activity */}
       <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
         <Card className="bg-card border-border">
           <CardHeader>
@@ -156,17 +204,17 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
               <Monitor className="h-5 w-5" />
               System Information
             </CardTitle>
-            <CardDescription>Current system specifications and status</CardDescription>
+            <CardDescription>Local hardware details</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
-                  <Cpu className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm text-card-foreground">Processor</span>
+                  <Shield className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm text-card-foreground">OS</span>
                 </div>
                 <span className="text-sm font-medium text-card-foreground">
-                  {sysInfo?.cpu || "Loading..."}
+                  {sysInfo?.os || "Loading..."}
                 </span>
               </div>
               <div className="flex items-center justify-between flex-wrap gap-2">
@@ -180,22 +228,12 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
               </div>
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
-                  <HardDrive className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm text-card-foreground">Storage</span>
+                  <Cpu className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm text-card-foreground">Processor</span>
                 </div>
-                <span className="text-sm font-medium text-card-foreground">
-                  {sysInfo?.storage
-                    ? sysInfo.storage.map(d => `${d.name.split(' ')[0]} (${Math.round(d.size / 1024 ** 3)} GB)`).join(', ')
-                    : "Loading..."}
-                </span>
-              </div>
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <Shield className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm text-card-foreground">OS</span>
-                </div>
-                <span className="text-sm font-medium text-card-foreground">
-                  {sysInfo?.os || "Loading..."}
+                {/* Simplified CPU display */}
+                <span className="text-sm font-medium text-card-foreground truncate max-w-[200px]" title={sysInfo?.cpu}>
+                  {sysInfo?.cpu ? sysInfo.cpu.split(' @')[0] : "Loading..."}
                 </span>
               </div>
             </div>
@@ -208,33 +246,29 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
               <Clock className="h-5 w-5" />
               Recent Activity
             </CardTitle>
-            <CardDescription>Latest wipe operations and system events</CardDescription>
+            <CardDescription>Latest local operations</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-3">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="h-4 w-4 text-secondary mt-0.5" />
-                <div className="flex-1 space-y-1">
-                  <p className="text-sm text-card-foreground">Secure wipe completed</p>
-                  <p className="text-xs text-muted-foreground">Samsung SSD 970 EVO - 512GB • 2 hours ago</p>
+              {recentActivity.length > 0 ? (
+                recentActivity.map((cert) => (
+                  <div key={cert.certificate_id} className="flex items-start gap-3">
+                    <CheckCircle2 className="h-4 w-4 text-secondary mt-0.5" />
+                    <div className="flex-1 space-y-1">
+                      <p className="text-sm text-card-foreground">
+                        {cert.post_wipe_status === 'simulated' ? 'Dry-run wipe completed' : 'Secure wipe completed'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {cert.device_info.model} - {cert.device_info.capacity} • {new Date(cert.timestamp_utc).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="flex items-center justify-center p-4 text-muted-foreground text-sm">
+                  No recent wipe activity found.
                 </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="h-4 w-4 text-secondary mt-0.5" />
-                <div className="flex-1 space-y-1">
-                  <p className="text-sm text-card-foreground">Certificate generated</p>
-                  <p className="text-xs text-muted-foreground">DOD 5220.22-M standard • 2 hours ago</p>
-                </div>
-              </div>
-
-              <div className="flex items-start gap-3">
-                <AlertTriangle className="h-4 w-4 text-yellow-500 mt-0.5" />
-                <div className="flex-1 space-y-1">
-                  <p className="text-sm text-card-foreground">System update available</p>
-                  <p className="text-xs text-muted-foreground">SecureWipe Pro v2.1.1 • 1 day ago</p>
-                </div>
-              </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -247,7 +281,12 @@ export function Dashboard({ onNavigateToWipe, }: { onNavigateToWipe: () => void 
             <HardDrive className="h-5 w-5" />
             Connected Storage Devices
           </CardTitle>
-          <CardDescription>Available drives for secure wiping operations</CardDescription>
+          <div className="flex flex-col gap-1">
+            <CardDescription>Available drives for secure wiping operations</CardDescription>
+            <p className="text-xs text-amber-500 font-medium">
+              ⚠️ Only non-system drives should be selected for wipe operations. Do not allow actions directly from the dashboard.
+            </p>
+          </div>
         </CardHeader>
         <CardContent>
           <VolumesGrid />

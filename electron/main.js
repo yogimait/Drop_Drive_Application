@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const { listDrives } = require('./deviceManager');
 const path = require('path');
 const isDev = process.env.NODE_ENV === 'development';
@@ -41,6 +41,47 @@ ipcMain.handle('get-volumes', async () => {
 // List all available drives
 ipcMain.handle('list-drives', async () => {
   return await listDrives();
+});
+
+// Get Database Status
+ipcMain.handle('get-db-status', () => {
+  try {
+    const { isDatabaseReady } = require('./db/database');
+    return isDatabaseReady();
+  } catch (error) {
+    console.error('Failed to check DB status:', error);
+    return false;
+  }
+});
+
+// Open a file or folder in the system file explorer
+ipcMain.handle('open-path', async (event, pathStr) => {
+  try {
+    let targetPath = pathStr;
+
+    // Resolve special aliases
+    if (pathStr === 'certificates') {
+      targetPath = path.join(__dirname, '../certificates');
+    } else if (pathStr === 'logs') {
+      // Assuming logs might be in userData or loose in root
+      targetPath = app.getPath('userData');
+    } else if (pathStr === '.') {
+      // Open the app directory
+      targetPath = path.dirname(app.getPath('exe'));
+    }
+
+    if (!fs.existsSync(targetPath)) {
+      // Try creating certificates folder if it doesn't exist to avoid error
+      if (pathStr === 'certificates') {
+        fs.mkdirSync(targetPath, { recursive: true });
+      }
+    }
+
+    const error = await shell.openPath(targetPath);
+    return { success: !error, error };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 // Test native C++ addon
