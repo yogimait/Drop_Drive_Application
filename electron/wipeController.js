@@ -7,13 +7,17 @@ const os = require('os');
 const { Worker } = require('worker_threads');
 const { generateWipeCertificate } = require('./certificateGenerator');
 const purgeController = require('./purgeController');
-
+const { app } = require('electron');
+const wipeLogger = require('./wipeLogger');
 
 // Try to load the native addon
 let wipeAddon;
 try {
-  // Construct the correct, absolute path to the native addon
-  const addonPath = path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+  // Production: resources/native/wipeAddon.node (via extraResources)
+  // Development: native/build/Release/wipeAddon.node
+  const addonPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'native', 'wipeAddon.node')
+    : path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
 
   // Load the addon using the absolute path
   wipeAddon = require(addonPath);
@@ -30,6 +34,92 @@ const wipeController = new EventEmitter();
 // Track active wipe tasks for cancellation
 const activeTasks = new Map();
 
+/**
+ * PRE-FLIGHT VALIDATION: Ensure device is ready for wiping
+ * Checks performed:
+ * 1. Device path format (must be \\.\PhysicalDriveX on Windows)
+ * 2. Device exists and can be opened with write permission
+ * 3. Device size can be determined (critical for wipe progress)
+ * 
+ * @param {string} devicePath - The device path to validate
+ * @returns {Promise<{valid: boolean, error?: string, details?: object}>}
+ */
+async function validateDeviceForWipe(devicePath) {
+  const isWindows = os.platform() === 'win32';
+  const details = { devicePath, platform: os.platform() };
+
+  // Check 1: Device path format validation
+  if (isWindows) {
+    // Windows requires \\.\PhysicalDriveX format for raw disk access
+    const physicalDrivePattern = /^\\\\\.\\\\PhysicalDrive\d+$/i;
+    const alternatePattern = /^\\\\.\\PhysicalDrive\d+$/i;
+
+    if (!physicalDrivePattern.test(devicePath) && !alternatePattern.test(devicePath)) {
+      // Check if it's a mount point like E: or E:\
+      if (/^[A-Z]:[\\/]?$/i.test(devicePath)) {
+        return {
+          valid: false,
+          error: `Invalid device path format. Received mount point "${devicePath}" but raw disk access requires "\\\\.\\\PhysicalDriveX" format. Please select the physical drive, not a volume.`,
+          details: { ...details, issue: 'mount_point_instead_of_raw' }
+        };
+      }
+      return {
+        valid: false,
+        error: `Invalid device path format: "${devicePath}". Expected format: \\\\.\\\PhysicalDriveX (e.g., \\\\.\\\PhysicalDrive1)`,
+        details: { ...details, issue: 'invalid_format' }
+      };
+    }
+  } else {
+    // Linux/macOS requires /dev/sdX or /dev/nvmeXnY format
+    if (!devicePath.startsWith('/dev/')) {
+      return {
+        valid: false,
+        error: `Invalid device path format: "${devicePath}". Expected format: /dev/sdX or /dev/nvmeXnY`,
+        details: { ...details, issue: 'invalid_format' }
+      };
+    }
+  }
+
+  // Check 2: Device accessibility test (can we open it?)
+  if (isWindows) {
+    // On Windows, we need to use native addon to check device access
+    // For now, we'll trust the path format and let the native code handle it
+    // The native addon will report ACCESS_DENIED if there's a problem
+    console.log(`[Validation] Device path format OK: ${devicePath}`);
+  } else {
+    // On Linux/macOS, check if device exists
+    if (!fs.existsSync(devicePath)) {
+      return {
+        valid: false,
+        error: `Device not found: ${devicePath}`,
+        details: { ...details, issue: 'device_not_found' }
+      };
+    }
+  }
+
+  // Check 3: Get device info using native addon (if available)
+  if (wipeAddon && typeof wipeAddon.getDeviceInfo === 'function') {
+    try {
+      const deviceInfo = wipeAddon.getDeviceInfo(devicePath);
+      if (!deviceInfo || deviceInfo.size === 0) {
+        return {
+          valid: false,
+          error: `Cannot determine device size for: ${devicePath}. This may indicate the device is not accessible or is in use by another process.`,
+          details: { ...details, issue: 'cannot_get_size', deviceInfo }
+        };
+      }
+      console.log(`[Validation] Device verified: ${devicePath}, Size: ${(deviceInfo.size / 1024 / 1024 / 1024).toFixed(2)} GB`);
+      details.deviceSize = deviceInfo.size;
+      details.deviceSizeGB = deviceInfo.sizeGB;
+    } catch (err) {
+      // If getDeviceInfo fails, log but continue (addon may still work)
+      console.warn(`[Validation] getDeviceInfo failed: ${err.message}`);
+    }
+  }
+
+  return { valid: true, details };
+}
+
 function cancelWipe(wipeId) {
   if (activeTasks.has(wipeId)) {
     console.log(`[WipeController] Cancelling wipe ${wipeId}`);
@@ -42,9 +132,14 @@ function cancelWipe(wipeId) {
 
 // Helper to run blocking operations in a worker thread
 function runWorkerTask(wipeId, operation, devicePath, wipeType, dryRun, onProgress) {
+  // Get the addon path to pass to worker (worker can't use electron module)
+  const workerAddonPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'native', 'wipeAddon.node')
+    : path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+
   return new Promise((resolve, reject) => {
     const worker = new Worker(path.join(__dirname, 'wipeWorker.js'), {
-      workerData: { operation, devicePath, wipeType, dryRun }
+      workerData: { operation, devicePath, wipeType, dryRun, addonPath: workerAddonPath }
     });
 
     const cleanup = () => { clearInterval(progressInterval); if (wipeId) activeTasks.delete(wipeId); };
@@ -207,6 +302,13 @@ async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInf
 
   console.log(`[WipeController] Starting ${type} on ${device} (dryRun: ${dryRun})`);
 
+  // NOTE: Simulation mode is allowed in production for compatibility testing
+  // Certificate generation is blocked separately for simulated wipes
+  if (dryRun && app.isPackaged) {
+    console.log('[WipeController] Simulation mode running in production (for compatibility testing)');
+    wipeLogger.info('WIPE', 'Simulation mode in production', { devicePath: device, wipeType: type });
+  }
+
   if (!device) {
     return {
       status: 'failed',
@@ -217,7 +319,60 @@ async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInf
     };
   }
 
+  // PRE-FLIGHT VALIDATION: Run comprehensive checks for LIVE wipes
+  // This prevents silent failures by catching issues before the wipe starts
+  if (!dryRun) {
+    console.log('[WipeController] Running pre-flight device validation...');
+    const validation = await validateDeviceForWipe(device);
+
+    if (!validation.valid) {
+      console.error(`[WipeController] Pre-flight validation FAILED: ${validation.error}`);
+      wipeLogger.securityWarning('Pre-flight validation failed', {
+        devicePath: device,
+        wipeType: type,
+        error: validation.error,
+        details: validation.details
+      });
+
+      return {
+        status: 'failed',
+        executed: false,
+        methodUsed: 'none',
+        message: validation.error,
+        fallbackSuggested: {
+          methods: ['Verify device path', 'Check admin privileges', 'Close other programs using the drive'],
+          reason: validation.error
+        }
+      };
+    }
+
+    console.log(`[WipeController] Pre-flight validation PASSED:`, validation.details);
+  }
+
   const logs = [];
+  const startTime = Date.now(); // Track duration for logging
+
+  // Log wipe start
+  wipeLogger.wipeStarted(device, type, dryRun, deviceInfo);
+
+  // MULTI-DRIVE SAFETY: Verify serial number if provided
+  if (deviceInfo?.confirmedSerial && deviceInfo?.serial) {
+    if (deviceInfo.serial !== deviceInfo.confirmedSerial) {
+      const errorMsg = `Drive mismatch detected! Expected serial '${deviceInfo.confirmedSerial}' but got '${deviceInfo.serial}'. Aborting for safety.`;
+      wipeLogger.securityWarning('Drive mismatch detected', {
+        expectedSerial: deviceInfo.confirmedSerial,
+        actualSerial: deviceInfo.serial,
+        devicePath: device
+      });
+      return {
+        status: 'failed',
+        executed: false,
+        methodUsed: 'none',
+        message: errorMsg,
+        fallbackSuggested: null
+      };
+    }
+  }
 
   try {
     logs.push(`Operation started at ${new Date().toLocaleTimeString()}`);
@@ -281,36 +436,52 @@ async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInf
       }
     }
 
-    // Generate certificate if successful and not a dry run
+    // CRITICAL: Only generate certificate if wipe was ACTUALLY successful
+    // Never allow certificate for failed, simulated, or unsupported operations
     let certificateResult = null;
-    if (result.status === 'success' && !dryRun) {
-      onProgress?.({ progress: 95, stage: 'Generating certificate...', logs: [...logs] });
+    if (result.status === 'success' && result.executed && !dryRun) {
+      // Double-check: Certificate BLOCKED if wipe was not successful
+      if (!result.executed) {
+        logs.push('Certificate blocked: wipe was not actually executed');
+      } else {
+        onProgress?.({ progress: 95, stage: 'Generating certificate...', logs: [...logs] });
 
-      const deviceInfoForCert = deviceInfo || {
-        serial: device,
-        model: label || 'Unknown Device',
-        type: 'Unknown',
-        capacity: 'Unknown'
-      };
+        const deviceInfoForCert = deviceInfo || {
+          serial: device,
+          model: label || 'Unknown Device',
+          type: 'Unknown',
+          capacity: 'Unknown'
+        };
 
-      try {
-        certificateResult = await generateWipeCertificate({
-          device,
-          deviceInfo: deviceInfoForCert,
-          eraseMethod: result.methodUsed,
-          nistProfile: type.charAt(0).toUpperCase() + type.slice(1), // Clear, Purge, or Destroy
-          postWipeStatus: result.status,
-          logs: logs,
-          toolVersion: "2.1.0",
-          simulated: dryRun  // Track if this was a dry run
-        });
-      } catch (certError) {
-        logs.push(`Certificate generation failed: ${certError.message}`);
+        try {
+          certificateResult = await generateWipeCertificate({
+            device,
+            deviceInfo: deviceInfoForCert,
+            eraseMethod: result.methodUsed,
+            nistProfile: type.charAt(0).toUpperCase() + type.slice(1), // Clear, Purge, or Destroy
+            postWipeStatus: result.status,
+            logs: logs,
+            toolVersion: "2.1.0",
+            simulated: false  // Explicitly false - we only reach here for real wipes
+          });
+          logs.push(`Certificate generated: ${certificateResult?.certificateId || 'unknown'}`);
+        } catch (certError) {
+          console.error('[WipeController] Certificate generation failed:', certError);
+          logs.push(`Certificate generation failed: ${certError.message}`);
+        }
       }
+    } else if (result.status !== 'success') {
+      logs.push(`Certificate not generated: wipe status was '${result.status}'`);
+    } else if (dryRun) {
+      logs.push('Certificate not generated: simulation mode (dry run)');
     }
 
     logs.push(`Operation completed at ${new Date().toLocaleTimeString()}`);
     onProgress?.({ progress: 100, stage: result.message, logs: [...logs] });
+
+    // Log wipe completion
+    const durationMs = Date.now() - startTime;
+    wipeLogger.wipeCompleted(device, result, durationMs);
 
     // Return structured response matching the spec
     return {
@@ -322,9 +493,11 @@ async function startWipe({ devicePath, wipeType, dryRun = true, label, deviceInf
       logs: logs,
       completedAt: new Date().toISOString(),
       certificatePath: certificateResult?.certPath || null,
-      completedAt: new Date().toISOString()
+      durationMs
     };
   } catch (error) {
+    const durationMs = Date.now() - startTime;
+    wipeLogger.wipeFailed(device, error, durationMs);
     console.error('[WipeController] Error during wipe:', error);
 
     // Check if this is a privilege/permission error

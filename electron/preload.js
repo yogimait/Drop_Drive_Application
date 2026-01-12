@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('api', {
   getAdminStatus: () => ipcRenderer.invoke('get-admin-status'),
   restartElevated: () => ipcRenderer.invoke('restart-elevated'),
 
+  // App Environment
+  isProduction: () => ipcRenderer.invoke('is-production'),
+
   // Wipe Operations
   // startWipe accepts user intent, returns structured response:
   // Params: { devicePath: string, wipeType: "clear"|"purge"|"destroy", dryRun: boolean, label?: string, deviceInfo?: object }

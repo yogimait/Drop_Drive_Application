@@ -2,11 +2,23 @@
 // Attempts purge methods in order: Crypto Erase → NVMe Sanitize → ATA Secure Erase
 
 const path = require('path');
+const fs = require('fs');
+const { app } = require('electron');
 
-// Try to load the native addon
+// Try to load the native addon with prod-safe path resolution
 let wipeAddon;
 try {
-    const addonPath = path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+    // Production: resources/native/wipeAddon.node (via extraResources)
+    // Development: native/build/Release/wipeAddon.node
+    const addonPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'native', 'wipeAddon.node')
+        : path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+
+    // Verify addon file exists before loading
+    if (!fs.existsSync(addonPath)) {
+        throw new Error(`Native addon not found at: ${addonPath}`);
+    }
+
     wipeAddon = require(addonPath);
     console.log('[PurgeController] Native addon loaded successfully');
 } catch (error) {

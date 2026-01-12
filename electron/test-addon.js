@@ -1,9 +1,9 @@
 const addon = require('../native/build/Release/wipeAddon.node');
-   const fs = require('fs');
-   const path = require('path');
+const fs = require('fs');
+const path = require('path');
 
-   // Create test file
-   const testFile = path.join(__dirname, 'test-wipe.txt');
+// Create test file
+const testFile = path.join(__dirname, 'test-wipe.txt');
    fs.writeFileSync(testFile, 'This is test data to be wiped');
 
    console.log('Original content:', fs.readFileSync(testFile, 'utf8'));

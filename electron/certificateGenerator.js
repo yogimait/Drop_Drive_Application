@@ -2,9 +2,20 @@ const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const os = require('os');
+const { app } = require('electron');
 const { generatePdfCertificate } = require('./pdfCertificateGenerator');
 const { insertCertificate, isDatabaseReady } = require('./db/database');
 
+// SINGLE SOURCE OF TRUTH for certificate directory
+const CERT_DIR = path.join(app.getPath('userData'), 'certificates');
+
+// Ensure certificate directory exists
+function ensureCertDir() {
+  if (!fs.existsSync(CERT_DIR)) {
+    fs.mkdirSync(CERT_DIR, { recursive: true });
+  }
+  return CERT_DIR;
+}
 
 async function generateWipeCertificate({
   device,
@@ -16,6 +27,16 @@ async function generateWipeCertificate({
   toolVersion = "1.0.0",
   simulated = false  // Whether this was a dry run
 }) {
+  // CRITICAL: Block certificate generation if wipe was not successful
+  if (postWipeStatus !== 'success') {
+    throw new Error(`Certificate blocked: wipe status was '${postWipeStatus}', not 'success'`);
+  }
+
+  // CRITICAL: Never generate real certificates for simulated wipes
+  if (simulated) {
+    throw new Error('Certificate blocked: cannot generate certificate for simulated/dry-run wipe');
+  }
+
   // Generate UUID once - used for JSON, PDF, and DB primary key
   const certificateId = uuidv4();
   const timestampUtc = new Date().toISOString();
@@ -37,9 +58,8 @@ async function generateWipeCertificate({
     tool_version: toolVersion
   };
 
-  // Ensure certificates/ folder exists
-  const certFolder = path.resolve(__dirname, '../certificates');
-  if (!fs.existsSync(certFolder)) fs.mkdirSync(certFolder, { recursive: true });
+  // Ensure certificates folder exists (single source of truth)
+  const certFolder = ensureCertDir();
 
   // Use the same UUID for filename consistency
   const certFilename = `certificate_${certificateId}.json`;
@@ -48,18 +68,37 @@ async function generateWipeCertificate({
   // Write JSON certificate (absolute path)
   fs.writeFileSync(certPath, JSON.stringify(certificate, null, 2), 'utf8');
 
-  // Generate PDF certificate (returns absolute path)
-  const pdfPath = await generatePdfCertificate(certPath);
+  // Verify JSON file was created
+  if (!fs.existsSync(certPath)) {
+    throw new Error(`Certificate JSON file was not created at: ${certPath}`);
+  }
 
-  // Insert into SQLite database
-  // This is SYNCHRONOUS - caller should have try/catch in main wipe flow
+  // Generate PDF certificate with try/catch (PDFKit can fail silently)
+  let pdfPath;
+  try {
+    pdfPath = await generatePdfCertificate(certPath);
+  } catch (pdfError) {
+    console.error('[CertGen] PDF generation failed:', pdfError);
+    // Clean up orphaned JSON file
+    try { fs.unlinkSync(certPath); } catch (e) { /* ignore */ }
+    throw new Error(`Certificate PDF generation failed: ${pdfError.message}`);
+  }
+
+  // Verify PDF file was created
+  if (!fs.existsSync(pdfPath)) {
+    // Clean up orphaned JSON file
+    try { fs.unlinkSync(certPath); } catch (e) { /* ignore */ }
+    throw new Error(`Certificate PDF file was not created at: ${pdfPath}`);
+  }
+
+  // CRITICAL: Only insert into DB AFTER both files are verified to exist
   if (isDatabaseReady()) {
     try {
       insertCertificate({
         id: certificateId,  // Same UUID as JSON/PDF filename
         created_at: timestampUtc,  // ISO string
         wipe_type: nistProfile,  // Clear/Purge/Destroy
-        status: postWipeStatus,  // success/simulated/unsupported/failed
+        status: postWipeStatus,  // success (only value allowed to reach here)
         device_model: deviceInfo?.model || null,
         device_size: deviceInfo?.capacity || null,
         device_type: deviceInfo?.type || null,
@@ -72,16 +111,23 @@ async function generateWipeCertificate({
       });
       console.log(`[CertGen] Certificate ${certificateId} saved to database`);
     } catch (dbError) {
-      // Log error but never break the wipe result
+      // Log error but don't break - files exist even if DB fails
       console.error(`[CertGen] Failed to save certificate to DB (non-fatal):`, dbError);
     }
   } else {
     console.warn('[CertGen] Database not ready, skipping DB insert');
   }
 
+  // Log successful generation (if wipeLogger is available)
+  try {
+    const wipeLogger = require('./wipeLogger');
+    wipeLogger.certificateGenerated(certificateId, certPath, pdfPath);
+  } catch (e) { /* wipeLogger not required */ }
+
   // Return both file paths (absolute)
   return { certPath, pdfPath, certificateId };
 }
 
+// Export CERT_DIR for consistency across modules
+module.exports = { generateWipeCertificate, CERT_DIR, ensureCertDir };
 
-module.exports = { generateWipeCertificate };

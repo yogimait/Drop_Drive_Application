@@ -1,5 +1,7 @@
 {
   "name": "drop-drive",
+  "description": "Offline secure disk wiping utility for Windows",
+  "author": "Yogesh Kumar",
   "version": "2.1.0",
   "private": true,
   "main": "electron/main.js",
@@ -7,10 +9,36 @@
     "dev": "next dev",
     "electron": "cross-env NODE_ENV=development electron .",
     "dev:all": "concurrently \"next dev\" \"wait-on http://localhost:3000 && pnpm electron\"",
-    "build:next": "next build && next export -o out",
+    "build:next": "next build",
     "build:electron": "cross-env NODE_ENV=production electron .",
     "build": "next build",
-    "dist": "electron-builder"
+    "dist": "pnpm build && electron-builder"
+  },
+  "build": {
+    "appId": "com.dropdrive.app",
+    "productName": "DropDrive",
+    "files": [
+      "out/**/*",
+      "electron/**/*",
+      "native/build/Release/wipeAddon.node",
+    "certificates/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/build/Release/wipeAddon.node",
+        "to": "native/wipeAddon.node"
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator",
+      "verifyUpdateCodeSignature": false
+    }
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

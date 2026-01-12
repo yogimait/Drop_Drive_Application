@@ -50,6 +50,13 @@ function calculateDuration(start, end) {
 async function generatePdfCertificate(jsonCertPath) {
   const cert = JSON.parse(fs.readFileSync(jsonCertPath, 'utf8'));
   const pdfPath = jsonCertPath.replace(/\.json$/, '.pdf');
+
+  // Ensure the certificates directory exists before writing PDF
+  const certDir = path.dirname(pdfPath);
+  if (!fs.existsSync(certDir)) {
+    fs.mkdirSync(certDir, { recursive: true });
+  }
+
   const doc = new PDFDocument({ margin: 50, size: 'A4' });
 
   const stream = fs.createWriteStream(pdfPath);
@@ -178,6 +185,17 @@ async function generatePdfCertificate(jsonCertPath) {
 
   doc.end();
   await new Promise((resolve, reject) => { stream.on('finish', resolve); stream.on('error', reject); });
+
+  // Verify the PDF file was actually created
+  if (!fs.existsSync(pdfPath)) {
+    throw new Error(`PDF certificate file was not created at: ${pdfPath}`);
+  }
+
+  // Verify the file has content (not empty)
+  const stats = fs.statSync(pdfPath);
+  if (stats.size === 0) {
+    throw new Error(`PDF certificate file is empty at: ${pdfPath}`);
+  }
 
   return pdfPath;
 }

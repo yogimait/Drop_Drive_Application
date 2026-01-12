@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
-const { listDrives } = require('./deviceManager');
 const path = require('path');
-const isDev = process.env.NODE_ENV === 'development';
+const { listDrives } = require('./deviceManager');
 const os = require('os');
 const si = require('systeminformation');
 const { startWipe, cancelWipe, testNativeAddon, executePurge, checkPurgeCapabilities, formatPurgeResult } = require('./wipeController');
@@ -9,13 +8,26 @@ const { generateWipeCertificate } = require('./certificateGenerator');
 const { checkElevation, getElevationStatus, restartWithElevation } = require('./adminUtils');
 const fs = require('fs');
 const { initializeDatabase, getAllCertificates, getCertificateById, closeDatabase } = require('./db/database');
+const { performHealthCheck, runAllChecks } = require('./systemHealthCheck');
+
+// ============================================
+// CHROMIUM/GPU NOISE SILENCING (Before app ready)
+// ============================================
+app.commandLine.appendSwitch('disable-gpu-cache');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+app.commandLine.appendSwitch('disable-software-rasterizer');
 
 // Global admin state - checked once at startup
 let isAppElevated = false;
 
 // Global variable to track active wipe operations
 const activeWipes = new Map();
-const addonPath = path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+// Production: resources/native/wipeAddon.node (via extraResources)
+// Development: native/build/Release/wipeAddon.node
+const addonPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'native', 'wipeAddon.node')
+  : path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+
 // Use systeminformation for more accurate info
 ipcMain.handle('get-system-info', async () => {
   const cpu = await si.cpu();
@@ -61,7 +73,7 @@ ipcMain.handle('open-path', async (event, pathStr) => {
 
     // Resolve special aliases
     if (pathStr === 'certificates') {
-      targetPath = path.join(__dirname, '../certificates');
+      targetPath = path.join(app.getPath('userData'), 'certificates');
     } else if (pathStr === 'logs') {
       // Assuming logs might be in userData or loose in root
       targetPath = app.getPath('userData');
@@ -360,7 +372,7 @@ ipcMain.handle('get-certificates', async () => {
   } catch (error) {
     console.error('[Main] Failed to get certificates from DB:', error);
     // Fallback to file-based reading for backwards compatibility
-    const certFolder = path.join(__dirname, '../certificates');
+    const certFolder = path.join(app.getPath('userData'), 'certificates');
     if (!fs.existsSync(certFolder)) {
       return [];
     }
@@ -377,11 +389,16 @@ ipcMain.handle('get-certificates', async () => {
   }
 });
 
-// Download certificate PDF (existing functionality)
+// Download certificate PDF
+// CRITICAL FIX: Use app.getPath('userData') path where certificates are actually stored
 ipcMain.handle('download-certificate-pdf', async (event, certificateId) => {
-  const certFolder = path.join(__dirname, '../certificates');
+  // Primary path: userData certificates directory (where we actually save them)
+  const certFolder = path.join(app.getPath('userData'), 'certificates');
   const pdfPath = path.join(certFolder, `certificate_${certificateId}.pdf`);
 
+  console.log(`[Main] Looking for PDF at: ${pdfPath}`);
+
+  // Check primary location
   if (fs.existsSync(pdfPath)) {
     try {
       const pdfBuffer = fs.readFileSync(pdfPath);
@@ -390,9 +407,22 @@ ipcMain.handle('download-certificate-pdf', async (event, certificateId) => {
       console.error(`Failed to read PDF ${pdfPath}:`, error);
       return { success: false, error: error.message };
     }
-  } else {
-    return { success: false, error: 'PDF file not found.' };
   }
+
+  // Fallback: Check DB for stored pdf_path (might have absolute path)
+  try {
+    const cert = getCertificateById(certificateId);
+    if (cert && cert.pdf_path && fs.existsSync(cert.pdf_path)) {
+      console.log(`[Main] Found PDF at DB path: ${cert.pdf_path}`);
+      const pdfBuffer = fs.readFileSync(cert.pdf_path);
+      return { success: true, data: pdfBuffer };
+    }
+  } catch (dbError) {
+    console.warn(`[Main] DB fallback failed:`, dbError);
+  }
+
+  console.error(`[Main] PDF not found for certificate: ${certificateId}`);
+  return { success: false, error: 'PDF file not found.' };
 });
 
 // Get single certificate by ID from database
@@ -442,29 +472,61 @@ ipcMain.handle('restart-elevated', async () => {
   return restartWithElevation();
 });
 
+// Check if app is running in production (packaged)
+ipcMain.handle('is-production', () => {
+  return app.isPackaged;
+});
+
 // Create the main application window
 function createWindow() {
+  const isDev = !app.isPackaged;
+
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
+    show: false, // Don't show until ready
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      devTools: isDev, // Disable DevTools entirely in production
     },
   });
 
-  const startUrl = isDev
-    ? 'http://localhost:3000'
-    : `file://${path.join(__dirname, '../.next/standalone/index.html')}`;
+  // Load the appropriate URL
+  if (isDev) {
+    win.loadURL('http://localhost:3000');
+    // Open DevTools in detached mode for better dev experience
+    win.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    win.loadFile(path.join(__dirname, '../out/index.html'));
+    // Security: Force close DevTools if someone tries to open them in production
+    win.webContents.on('devtools-opened', () => {
+      win.webContents.closeDevTools();
+    });
+  }
 
-  win.loadURL(startUrl);
-
-  // DevTools can be opened manually with Ctrl+Shift+I if needed
+  // Show window when ready to avoid flash
+  win.once('ready-to-show', () => {
+    win.show();
+  });
 }
 
 // App event handlers
 app.whenReady().then(() => {
+  // ============================================
+  // FIRST-RUN SYSTEM HEALTH CHECK (Critical)
+  // ============================================
+  console.log('[Main] DropDrive starting...');
+
+  // Perform health check - exits on critical failure
+  const healthResult = performHealthCheck(true); // true = exit on failure
+  if (!healthResult.success) {
+    console.error('[Main] Health check failed - app will exit');
+    return; // App will quit via performHealthCheck
+  }
+  console.log('[Main] System health check passed ✅');
+
   // Check elevation status at startup
   isAppElevated = checkElevation();
   console.log(`[Main] App elevation status: ${isAppElevated ? '✅ ELEVATED (Administrator)' : '⚠️ NOT ELEVATED (Standard user)'}`);

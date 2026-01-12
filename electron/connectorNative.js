@@ -1,8 +1,31 @@
 // connectorNative.js
 const path = require('path');
+const fs = require('fs');
+const { app, dialog } = require('electron');
 
-// Load the native wipe addon ONLY here:
-const wipeAddon = require(path.resolve(__dirname, '../native/build/Release/wipeAddon.node'));
+// Determine correct path for native addon
+// Production: resources/native/wipeAddon.node (via extraResources)
+// Development: native/build/Release/wipeAddon.node
+const addonPath = app.isPackaged
+  ? path.join(process.resourcesPath, 'native', 'wipeAddon.node')
+  : path.join(__dirname, '..', 'native', 'build', 'Release', 'wipeAddon.node');
+
+// CRITICAL: Hard exit if addon is missing - application cannot perform secure wipe without it
+if (!fs.existsSync(addonPath)) {
+  // In production, show error dialog and quit
+  if (app.isPackaged) {
+    dialog.showErrorBox(
+      'Critical Error',
+      `Native wipe engine missing.\n\nApplication cannot perform secure wipe.\n\nExpected path: ${addonPath}`
+    );
+    app.quit();
+  }
+  throw new Error(`Native wipe addon not available at: ${addonPath}`);
+}
+
+// Load the native wipe addon
+const wipeAddon = require(addonPath);
+console.log(`[Native] wipeAddon loaded from: ${addonPath}`);
 
 // This is your GLUE between Electron backend (JS) and C++ addon
 function wipeDeviceOrFile(device, method) {
@@ -12,5 +35,7 @@ function wipeDeviceOrFile(device, method) {
 }
 
 module.exports = {
-  wipeDeviceOrFile
+  wipeDeviceOrFile,
+  addonPath // Export for logging purposes
 };
+

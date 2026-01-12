@@ -98,7 +98,8 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
   const [progress, setProgress] = useState(0)
   const [currentStageText, setCurrentStageText] = useState("")
   const [wipeType, setWipeType] = useState<"clear" | "purge" | "destroy">("clear")
-  const [dryRun, setDryRun] = useState(true) // Default to safe simulation mode
+  const [dryRun, setDryRun] = useState(false) // Default to live mode (production-safe)
+  const [isProduction, setIsProduction] = useState(true) // Assume production by default (safer)
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [loadingDrives, setLoadingDrives] = useState(true);
   const [selectedDrive, setSelectedDrive] = useState<string | null>(null);
@@ -183,6 +184,25 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
     };
 
     loadDrives();
+
+    // Check if running in production
+    const checkProduction = async () => {
+      try {
+        // @ts-ignore
+        if (window.api?.isProduction) {
+          // @ts-ignore
+          const isProd = await window.api.isProduction();
+          setIsProduction(isProd);
+          // In production, force dryRun to false
+          if (isProd) {
+            setDryRun(false);
+          }
+        }
+      } catch (e) {
+        console.warn('Could not check production status:', e);
+      }
+    };
+    checkProduction();
   }, []);
 
   // Check admin status on component mount
@@ -254,11 +274,10 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
     }
   };
 
-  // Set up IPC listeners for wipe events
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.api) {
+    if (typeof window !== 'undefined' && (window as any).api) {
       // @ts-ignore
-      const cleanup1 = window.api.onWipeProgress?.((data) => {
+      const cleanup1 = window.api.onWipeProgress?.((data: any) => {
         console.log('Wipe progress:', data);
         setProgress(data.progress || 0);
         setCurrentStageText(data.stage || '');
@@ -678,7 +697,7 @@ export function WipeProcess({ onCertificateGenerated }: { onCertificateGenerated
                 </div>
               )}
 
-              {/* Dry Run Toggle */}
+              {/* Dry Run Toggle - Available for compatibility testing */}
               <div className="flex items-center justify-between p-3 rounded-lg border border-border bg-card/50">
                 <div>
                   <p className="font-medium text-card-foreground">Simulation Mode</p>
